@@ -22,6 +22,8 @@ globalThis.addEventListener = noop;
 globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
 globalThis.location = { pathname: "/", search: "", href: "http://x/", origin: "http://x" };
 globalThis.history = { pushState: noop, replaceState: noop };
+// Node 20 没有全局 navigator（21 起才有），模块里的 `"x" in navigator` 会直接抛错
+if (!("navigator" in globalThis)) globalThis.navigator = {};
 globalThis.matchMedia = () => ({ matches: false, addEventListener: noop });
 globalThis.document = {
   documentElement: fakeEl(), body: fakeEl(), title: "", visibilityState: "visible",
