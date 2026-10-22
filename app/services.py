@@ -235,8 +235,8 @@ def log_activity(db: Session, vehicle_id: Optional[int], user: User, action: str
 def fmt_num(x, digits=2) -> str:
     if x is None:
         return "-"
-    s = f"{x:.{digits}f}".rstrip("0").rstrip(".")
-    return s
+    s = f"{x:.{digits}f}"
+    return s.rstrip("0").rstrip(".") if "." in s else s
 
 
 CHARGE_LABEL = {"home": "家充", "public_ac": "公共慢充", "dc": "快充", "super": "超充", "swap": "换电"}

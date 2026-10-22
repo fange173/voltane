@@ -214,3 +214,19 @@ def test_signup_requires_setting(admin, vehicle):
     assert anon.get(f"/api/invites/{inv['code']}").json()["allow_signup"] is True
     assert anon.post("/api/auth/signup", json=body).status_code == 200
     admin.put("/api/admin/settings", json={"allow_signup": False})
+
+
+def test_fmt_num_keeps_integer_zeros():
+    from app.services import fmt_num
+
+    assert fmt_num(30.0, 0) == "30"
+    assert fmt_num(100, 0) == "100"
+    assert fmt_num(22.50) == "22.5"
+
+
+def test_login_reports_cookie_secure_flag(_app):
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    r = TestClient(app).post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    assert r.json()["cookie_secure"] is False

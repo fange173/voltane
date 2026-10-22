@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import (
+    COOKIE_SECURE,
     authenticate,
     check_login_allowed,
     clear_auth_cookie,
@@ -66,7 +67,7 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
     clear_login_failures(ip)
     token, max_age = create_token(user, body.remember)
     set_auth_cookie(response, token, max_age)
-    return user_to_dict(user)
+    return {**user_to_dict(user), "cookie_secure": COOKIE_SECURE}
 
 
 @router.post("/logout")

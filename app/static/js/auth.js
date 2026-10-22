@@ -25,6 +25,17 @@ export function loginPage(onDone, { code = null } = {}) {
     try {
       const user = await api("/api/auth/login", { method: "POST", body: {
         username: form.username.value.trim(), password: form.password.value, remember: form.remember.checked } });
+      // COOKIE_SECURE=true 时浏览器在 http 下不保存登录 Cookie，登录看起来没反应，这里明确提示
+      if (user.cookie_secure && location.protocol === "http:") {
+        $(".form-error", form).textContent = "服务端开启了 COOKIE_SECURE，只能通过 https 地址登录；局域网用 http 访问请把它改回 false";
+        return;
+      }
+      try {
+        await api("/api/auth/me");
+      } catch {
+        $(".form-error", form).textContent = "登录成功，但浏览器没有保存登录状态，请检查是否通过 https 访问，或浏览器是否禁用了 Cookie";
+        return;
+      }
       onDone(user);
     } catch (ex) {
       $(".form-error", form).textContent = ex.message;
