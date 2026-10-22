@@ -11,6 +11,7 @@ import {
   canEdit,
   currentVehicle,
   emit,
+  fuelLevelText,
   gradeLabel,
   state,
 } from "./state.js";
@@ -28,7 +29,7 @@ export function itemTitle(it) {
   }
   const parts = [];
   if (it.soc_before_pct != null) parts.push(`电 ${num(it.soc_before_pct, 0)}%`);
-  if (it.fuel_level_before_pct != null) parts.push(`油 ${num(it.fuel_level_before_pct, 0)}%`);
+  if (it.fuel_level_before_pct != null) parts.push(`油 ${fuelLevelText(it.fuel_level_before_pct, state.vehicles.find((x) => x.id === it.vehicle_id))}`);
   return `${SNAPSHOT_TAGS[it.snapshot_tag] || "快照"}${parts.length ? " · " + parts.join(" ") : ""}`;
 }
 
@@ -264,8 +265,8 @@ function detailHtml(d, v) {
       add("加油量", d.fuel_liters != null ? num(d.fuel_liters) + " L" + (d.estimated_fields?.includes("fuel_l") ? "（推算）" : "") : null);
       add("单价", d.fuel_unit_price != null ? fixed(d.fuel_unit_price) + " 元/L" : null);
       add("加满", d.fuel_is_full ? "是" : "否");
-      add("加油前油量", d.fuel_level_before_pct != null ? num(d.fuel_level_before_pct, 0) + "%" : null);
-      add("加油后油量", d.fuel_level_after_pct != null ? num(d.fuel_level_after_pct, 0) + "%" : null);
+      add("加油前油量", fuelLevelText(d.fuel_level_before_pct, v) || null);
+      add("加油后油量", fuelLevelText(d.fuel_level_after_pct, v) || null);
       add("当前电量", d.soc_before_pct != null ? num(d.soc_before_pct, 0) + "%" : null);
     }
     if (d.kind === "charge") {
@@ -275,12 +276,12 @@ function detailHtml(d, v) {
       add("单价", d.charge_unit_price != null ? fixed(d.charge_unit_price, 3) + " 元/度" : null);
       add("时长", d.charge_minutes != null ? Math.floor(d.charge_minutes / 60) + "小时" + (d.charge_minutes % 60) + "分" : null);
       if (d.energy_fee_cents != null) add("电费 / 服务费", `${money(d.energy_fee_cents)} / ${money(d.service_fee_cents)}`);
-      add("当前油量", d.fuel_level_before_pct != null ? num(d.fuel_level_before_pct, 0) + "%" : null);
+      add("当前油量", fuelLevelText(d.fuel_level_before_pct, v) || null);
     }
     if (d.kind === "snapshot") {
       add("标签", SNAPSHOT_TAGS[d.snapshot_tag]);
       add("电量", d.soc_before_pct != null ? num(d.soc_before_pct, 0) + "%" : null);
-      add("油量", d.fuel_level_before_pct != null ? num(d.fuel_level_before_pct, 0) + "%" : null);
+      add("油量", fuelLevelText(d.fuel_level_before_pct, v) || null);
     }
     if (d.amount_cents != null && d.paid_cents != null && d.amount_cents !== d.paid_cents) add("优惠", money(d.amount_cents - d.paid_cents));
     if (d.extra_fee_cents) add("附加费", money(d.extra_fee_cents));

@@ -51,6 +51,14 @@ export const PLACE_KIND = {
 };
 export const QUALITY_LABEL = { A: "精确", B: "估", C: "粗略", D: "不足" };
 
+/** 按车辆的油表显示方式把油量百分比换成「40%」「19.2 L」「3/8 格」。 */
+export function fuelLevelText(pct, v) {
+  if (pct == null) return "";
+  if (v?.fuel_gauge_mode === "liters" && v.tank_capacity_l) return `${+((pct / 100) * v.tank_capacity_l).toFixed(1)} L`;
+  if (v?.fuel_gauge_mode === "bars" && v.fuel_gauge_bars) return `${Math.round((pct / 100) * v.fuel_gauge_bars)}/${v.fuel_gauge_bars} 格`;
+  return `${Math.round(pct)}%`;
+}
+
 export function currentVehicle() {
   return state.vehicles.find((v) => v.id === state.vid) || null;
 }

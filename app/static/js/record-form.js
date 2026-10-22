@@ -83,7 +83,7 @@ function gaugeField(name, label, v) {
       <input type="hidden" name="${name}"><span class="hint">点格子：亮了几格就点第几格，再点一次清除</span></div>`;
   }
   if (v.fuel_gauge_mode === "liters" && v.tank_capacity_l) {
-    return html`<div class="field" data-f="${name}" data-liters="1"><label>${label}</label>
+    return html`<div class="field" data-f="${name}" data-liters="1" data-tank="${v.tank_capacity_l}"><label>${label}</label>
       <div class="input-wrap"><input class="input num" data-lit inputmode="decimal" placeholder="仪表显示的剩余升数"><span class="unit">L</span></div>
       <input type="hidden" name="${name}"></div>`;
   }
@@ -401,6 +401,11 @@ function wireLevels(form, v, st) {
       const l = toNum(lit.value);
       hidden.value = l == null ? "" : Math.min((l / v.tank_capacity_l) * 100, 100).toFixed(1);
       hidden.dataset.user = hidden.value ? "1" : "";
+      delete hidden.dataset.auto;
+      lit.classList.remove("auto");
+      if (EST_NAME[hidden.name]) st.est.delete(EST_NAME[hidden.name]);
+      recompute(form, v, st);
+      saveDraft(form, v, st);
     });
   });
 }
@@ -444,6 +449,13 @@ function syncLevel(inp) {
       r.classList.remove("unset");
     } else r.classList.add("unset");
     r.style.setProperty("--p", (inp.value !== "" ? Math.min(+inp.value, 100) : 0) + "%");
+  }
+  const lf = inp.closest("[data-liters]");
+  if (lf && inp.type === "hidden") {
+    const lit = $("[data-lit]", lf);
+    const T = +lf.dataset.tank;
+    lit.value = inp.value !== "" && T ? String(+((+inp.value / 100) * T).toFixed(1)) : "";
+    lit.classList.toggle("auto", !!inp.dataset.auto);
   }
   const g = inp.closest(".gauge-field");
   if (g) {
@@ -739,6 +751,8 @@ function recompute(form, v, st) {
 
   // 3. 依据车辆参数推算
   if (kind === "fuel" && T) {
+    // 按升或格数输入时百分比多保留两位，换算回升数才不会有偏差
+    const lvDigits = v.fuel_gauge_mode === "pct" ? 0 : 2;
     const full = form.fuel_is_full.checked;
     const before = val(form, "fuel_level_before_pct");
     const liters = val(form, "fuel_liters");
@@ -747,11 +761,11 @@ function recompute(form, v, st) {
         setAuto(form.fuel_liters, ((100 - before) / 100) * T, 1);
         markEst("fuel_liters");
       } else if (liters != null && before == null && !isUser(form, "fuel_level_before_pct") && form.fuel_level_before_pct) {
-        setAuto(form.fuel_level_before_pct, Math.max(0, ((T - liters) / T) * 100), 0);
+        setAuto(form.fuel_level_before_pct, Math.max(0, ((T - liters) / T) * 100), lvDigits);
         markEst("fuel_level_before_pct");
       }
     } else if (before != null && liters != null && form.fuel_level_after_pct && !isUser(form, "fuel_level_after_pct")) {
-      setAuto(form.fuel_level_after_pct, Math.min(100, before + (liters / T) * 100), 0);
+      setAuto(form.fuel_level_after_pct, Math.min(100, before + (liters / T) * 100), lvDigits);
       markEst("fuel_level_after_pct");
     }
   }

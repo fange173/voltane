@@ -69,12 +69,19 @@ def _spark(segs, n=10) -> list:
 
 
 def _history(led, v: Vehicle, exps) -> Optional[dict]:
-    """「提车至今」卡片：总里程、总花费、粗略能耗。"""
+    """「提车至今」卡片：总里程、总花费、粗略能耗。没有提车记录时改为「记账以来」，
+    记账起点之前的历史汇总单独列出，不混进每公里成本（那段里程未知）。"""
     di = delivery_index(led)
     if di is None:
         return None
     start = led.points[di]
     d0 = start.ts.date()
+    has_delivery = start.rec.snapshot_tag == "delivery"
+    before_cents = 0
+    for sm in led.summaries:
+        if sm.end < d0:
+            d = led.summary_diffs.get(sm.id, {})
+            before_cents += (d.get("fuel_cents") or 0) + (d.get("elec_cents") or 0)
     t = _today()
     rep = period_report(led, exps, d0, t, v.initial_odometer_km)
     out = {
@@ -86,6 +93,8 @@ def _history(led, v: Vehicle, exps) -> Optional[dict]:
         "total_cost_per_km": rep["total_cost_per_km"],
         "energy_cost_per_km": rep["energy_cost_per_km"],
         "has_summary": bool(led.summaries),
+        "scope": "delivery" if has_delivery else "ledger",
+        "summary_before_cents": before_cents,
     }
     if led.params.has_fuel:
         out["fuel"] = rough(led, "fuel", di)

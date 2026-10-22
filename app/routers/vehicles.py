@@ -77,6 +77,7 @@ class StartIn(BaseModel):
 
 
 class WizardSummaryIn(BaseModel):
+    start_date: Optional[date] = None
     fuel_liters: Optional[float] = Field(None, ge=0)
     fuel_cents: Optional[int] = Field(None, ge=0)
     fuel_price: Optional[float] = Field(None, gt=0)
@@ -96,6 +97,10 @@ class VehicleCreateIn(VehicleIn):
     start: Optional[StartIn] = None
     summary: Optional[WizardSummaryIn] = None
     reminders: list[WizardReminderIn] = Field(default_factory=list)
+
+
+def _summary_has_data(s: "WizardSummaryIn") -> bool:
+    return any(x is not None for x in (s.fuel_liters, s.fuel_cents, s.elec_kwh, s.elec_cents))
 
 
 def _clean_calc(c: dict) -> dict:
@@ -140,8 +145,26 @@ def create_vehicle(body: VehicleCreateIn, user: User = Depends(get_current_user)
     v = Vehicle(created_by=user.id)
     _apply(v, body)
     st = body.start
-    if st and v.initial_odometer_km is None:
-        v.initial_odometer_km = st.delivery_odo if st.mode == "existing" and st.delivery_odo is not None else st.current_odo
+    today = localnow().date()
+    # 中途开始记的用户常常不记得提车信息：只有提车日期和里程都填了才建提车锚点，缺哪个都不猜
+    has_delivery = bool(st and st.mode == "existing" and v.delivery_date and st.delivery_odo is not None)
+    if st and st.mode == "existing":
+        if v.delivery_date and v.delivery_date > today:
+            raise HTTPException(400, "提车日期不能晚于今天")
+        if st.delivery_odo is not None and st.current_odo is not None and st.delivery_odo > st.current_odo:
+            raise HTTPException(400, "提车里程不能大于当前里程")
+        if st.delivery_fill_l and not has_delivery:
+            raise HTTPException(400, "填「提车时加油」需要同时填提车日期和提车里程")
+        sm = body.summary
+        if sm and _summary_has_data(sm) and not (sm.start_date or v.delivery_date):
+            raise HTTPException(400, "历史汇总需要填开始日期")
+    if has_delivery:
+        v.initial_odometer_km = st.delivery_odo
+    elif st and st.mode == "new":
+        v.initial_odometer_km = st.current_odo
+    elif st and st.mode == "existing":
+        # 中途接入且不知道提车里程：没有起始里程，里程统计从记账起点开始
+        v.initial_odometer_km = None
     db.add(v)
     db.flush()
     db.add(VehicleMember(vehicle_id=v.id, user_id=user.id, role="owner"))
@@ -156,10 +179,10 @@ def create_vehicle(body: VehicleCreateIn, user: User = Depends(get_current_user)
         db.add(r)
         return r
 
-    if st and st.mode == "existing":
-        ddate = v.delivery_date or (now.date() - timedelta(days=1))
+    if has_delivery:
+        ddate = v.delivery_date
         dts = datetime.combine(ddate, datetime.min.time()).replace(hour=9)
-        dodo = st.delivery_odo if st.delivery_odo is not None else (v.initial_odometer_km or 0)
+        dodo = st.delivery_odo
         has_fuel = v.energy_type != "bev"
         pct = None
         if has_fuel and v.tank_capacity_l:
@@ -173,15 +196,15 @@ def create_vehicle(body: VehicleCreateIn, user: User = Depends(get_current_user)
                           if st.delivery_fill_cents else None,
                           fuel_is_full=False, created_by=user.id, updated_by=user.id, payer_user_id=user.id,
                           note="提车时加油"))
-        if body.summary and any(x is not None for x in (body.summary.fuel_liters, body.summary.fuel_cents,
-                                                         body.summary.elec_kwh, body.summary.elec_cents)):
-            s = body.summary
-            db.add(PeriodSummary(vehicle_id=v.id, start_date=ddate + timedelta(days=1),
-                                 end_date=max(now.date() - timedelta(days=1), ddate + timedelta(days=1)),
-                                 mode="extra", start_odometer_km=dodo, end_odometer_km=st.current_odo,
-                                 fuel_liters=s.fuel_liters, fuel_cents=s.fuel_cents, fuel_price=s.fuel_price,
-                                 elec_kwh=s.elec_kwh, elec_cents=s.elec_cents, elec_price=s.elec_price,
-                                 note=s.note or "新车向导：历史汇总", created_by=user.id, updated_by=user.id))
+    if st and st.mode == "existing" and body.summary and _summary_has_data(body.summary):
+        s_ = body.summary
+        s_start = s_.start_date or (v.delivery_date + timedelta(days=1))
+        s_end = max(today - timedelta(days=1), s_start)
+        db.add(PeriodSummary(vehicle_id=v.id, start_date=s_start, end_date=s_end, mode="extra",
+                             start_odometer_km=st.delivery_odo if has_delivery else None, end_odometer_km=st.current_odo,
+                             fuel_liters=s_.fuel_liters, fuel_cents=s_.fuel_cents, fuel_price=s_.fuel_price,
+                             elec_kwh=s_.elec_kwh, elec_cents=s_.elec_cents, elec_price=s_.elec_price,
+                             note=s_.note or "新车向导：历史汇总", created_by=user.id, updated_by=user.id))
     if st and st.mode in ("new", "existing") and st.current_odo is not None:
         snap(now, st.current_odo, "ledger_start", fuel_pct=st.current_fuel_pct, soc=st.current_soc)
 
@@ -197,7 +220,7 @@ def create_vehicle(body: VehicleCreateIn, user: User = Depends(get_current_user)
         due_date = item.due_date
         if due_date is None and t.get("interval_months"):
             # 没填日期时按「提车日（没有就今天）+ 周期」推算，滚动到今天之后
-            base = v.delivery_date or now.date()
+            base = v.delivery_date or today
             due_date = add_months(base, t["interval_months"])
             while due_date <= now.date():
                 due_date = add_months(due_date, t["interval_months"])
@@ -520,6 +543,39 @@ def fix_missed(vid: int, body: FixMissedIn, user: User = Depends(get_current_use
     log_activity(db, vid, user, "create", "record", r.id, "自动补录了一条疑似漏记的" + ("充电" if energy == "elec" else "加油"))
     db.commit()
     return {"ok": True, "record_id": r.id, "qty": qty, "cents": cents}
+
+
+class DeliveryIn(BaseModel):
+    odometer_km: float = Field(..., ge=0, le=3_000_000)
+    delivery_date: Optional[date] = None
+
+
+@router.post("/vehicles/{vid}/delivery")
+def fix_delivery(vid: int, body: DeliveryIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """修正提车里程（和日期）：同时改提车快照、提车当天的加油记录和车辆初始里程。"""
+    v, _ = require_vehicle(db, user, vid, "editor")
+    snap = db.scalar(select(Record).where(Record.vehicle_id == vid, Record.snapshot_tag == "delivery",
+                                          Record.deleted_at.is_(None)).order_by(Record.occurred_at).limit(1))
+    if not snap:
+        raise HTTPException(404, "没有提车记录")
+    old_ts, old_odo = snap.occurred_at, snap.odometer_km
+    new_ts = datetime.combine(body.delivery_date, old_ts.time()) if body.delivery_date else old_ts
+    fills = list(db.scalars(select(Record).where(
+        Record.vehicle_id == vid, Record.deleted_at.is_(None), Record.kind == "fuel",
+        Record.occurred_at >= old_ts, Record.occurred_at <= old_ts + timedelta(hours=1),
+        Record.odometer_km == old_odo)))
+    for r in [snap, *fills]:
+        r.occurred_at = new_ts + (r.occurred_at - old_ts)
+        r.odometer_km = body.odometer_km
+        r.updated_by = user.id
+        r.version = (r.version or 1) + 1
+    v.initial_odometer_km = body.odometer_km
+    if body.delivery_date:
+        v.delivery_date = body.delivery_date
+    bump(v)
+    log_activity(db, vid, user, "update", "vehicle", vid, f"把提车里程改为 {body.odometer_km:,.0f} km")
+    db.commit()
+    return {"ok": True, "updated": 1 + len(fills)}
 
 
 @router.get("/vehicles/{vid}/odometer")

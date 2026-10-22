@@ -230,3 +230,64 @@ def test_login_reports_cookie_secure_flag(_app):
 
     r = TestClient(app).post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     assert r.json()["cookie_secure"] is False
+
+
+def _wizard(c, start, summary=None, **v):
+    body = {**PHEV, **v, "start": start, "summary": summary}
+    return c.post("/api/vehicles", json=body)
+
+
+def test_wizard_midlife_without_delivery_info(make_user):
+    """中途接入、不记得提车信息：只建记账起点，不猜提车里程，各页面正常。"""
+    c = make_user()
+    r = _wizard(c, {"mode": "existing", "current_odo": 23000, "current_fuel_pct": 50, "current_soc": 80})
+    assert r.status_code == 200, r.text
+    c.vid = r.json()["id"]
+    assert r.json()["initial_odometer_km"] is None
+    recs = c.get(f"/api/records?vehicle_id={c.vid}").json()["items"]
+    assert [x["snapshot_tag"] for x in recs] == ["ledger_start"]
+    ov = c.get(f"/api/stats/overview?vehicle_id={c.vid}").json()
+    assert ov["latest"]["fuel"]["quality"] == "D"
+    # 补录记账起点之前的加油（带里程），不应把记录搅乱
+    assert rec(c, occurred_at="2026-03-01T10:00", odometer_km=20000, fuel_liters=40, paid_cents=30000,
+               fuel_is_full=True).status_code == 200
+    h = c.get(f"/api/vehicles/{c.vid}/health").json()
+    assert not any(i["key"] in ("delivery_odo", "odo_order") for i in h["issues"])
+    assert c.get(f"/api/stats/mileage?vehicle_id={c.vid}").status_code == 200
+
+
+def test_wizard_delivery_needs_both_date_and_odo(make_user):
+    c = make_user()
+    r = _wizard(c, {"mode": "existing", "current_odo": 9800}, delivery_date="2026-04-20")
+    c.vid = r.json()["id"]
+    tags = [x["snapshot_tag"] for x in c.get(f"/api/records?vehicle_id={c.vid}").json()["items"]]
+    assert "delivery" not in tags
+    bad = _wizard(c, {"mode": "existing", "current_odo": 9800, "delivery_fill_l": 30})
+    assert bad.status_code == 400
+    no_start = _wizard(c, {"mode": "existing", "current_odo": 9800}, summary={"elec_kwh": 500})
+    assert no_start.status_code == 400
+    ok = _wizard(c, {"mode": "existing", "current_odo": 9800}, summary={"elec_kwh": 500, "start_date": "2026-05-01"})
+    assert ok.status_code == 200
+    ov = c.get(f"/api/stats/overview?vehicle_id={ok.json()['id']}").json()
+    assert ov["history"] is None or ov["history"]["scope"] == "ledger"
+
+
+def test_fix_delivery_odometer(make_user):
+    """旧版向导把提车里程记成当前里程：体检提示，修正后快照和提车加油一起改。"""
+    c = make_user()
+    r = _wizard(c, {"mode": "existing", "delivery_odo": 9800, "delivery_fill_l": 30, "delivery_fill_cents": 22500,
+                    "current_odo": 9800, "current_fuel_pct": 40}, delivery_date="2026-04-20")
+    c.vid = r.json()["id"]
+    issue = next(i for i in c.get(f"/api/vehicles/{c.vid}/health").json()["issues"] if i["key"] == "delivery_odo")
+    assert issue["action"] == "fix_delivery"
+    assert c.post(f"/api/vehicles/{c.vid}/delivery", json={"odometer_km": 12}).json()["updated"] == 2
+    items = c.get(f"/api/records?vehicle_id={c.vid}").json()["items"]
+    assert sorted(x["odometer_km"] for x in items) == [12, 12, 9800]
+    assert not any(i["key"] == "delivery_odo" for i in c.get(f"/api/vehicles/{c.vid}/health").json()["issues"])
+
+
+def test_health_flags_odometer_order_conflict(vehicle):
+    rec(vehicle, odometer_km=5000, fuel_liters=10, paid_cents=7500)
+    rec(vehicle, occurred_at="2026-09-05T08:00", odometer_km=4000, fuel_liters=10, paid_cents=7600)
+    h = vehicle.get(f"/api/vehicles/{vehicle.vid}/health").json()
+    assert any(i["key"] == "odo_order" for i in h["issues"])

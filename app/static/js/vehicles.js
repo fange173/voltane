@@ -83,7 +83,7 @@ export function wizardPage() {
         await loadVehicles();
         setVehicle(res.id);
         refreshChrome();
-        toast(`已添加「${res.name}」`, { sub: "先记一次加满或快照，能耗就开始计算了" });
+        toast(`已添加「${res.name}」`, { sub: "以后加油尽量加满、充电时填一下电量，能耗就会越来越准" });
         navigate("/");
       } catch (ex) {
         $("#wiz-err").textContent = ex.message;
@@ -118,39 +118,57 @@ function step2(st) {
       <div class="field"><label>常用充电方式</label><div class="chips" data-ctype>${Object.entries(CHARGE_LABEL).map(([k, l]) => html`<button type="button" class="chip sm ${v.default_charge_type === k ? "on" : ""}" data-v="${k}">${l}</button>`)}</div></div>` : ""}
     ${hasFuel(t) ? html`<div class="field"><label>默认标号</label><div class="chips" data-grade>${FUEL_GRADES.map((g) => html`<button type="button" class="chip sm ${v.default_fuel_grade === g ? "on" : ""}" data-v="${g}">${gradeLabel(g)}</button>`)}</div></div>
       <div class="field"><label>油表显示方式</label><div class="segmented" data-gauge>${[["pct", "百分比"], ["bars", "格数"], ["liters", "升"]].map(([k, l]) => html`<button type="button" data-v="${k}" class="${v.fuel_gauge_mode === k ? "on" : ""}">${l}</button>`)}</div></div>
+      <span class="hint" style="margin-top:-8px">按「升」或「格数」输入需要填油箱容积，否则会退回按百分比</span>
       <div class="field ${v.fuel_gauge_mode === "bars" ? "" : "hidden"}" data-bars-f><label>油表总格数</label><div class="input-wrap"><input class="input num" name="fuel_gauge_bars" inputmode="numeric" value="${v.fuel_gauge_bars ?? 8}"><span class="unit">格</span></div></div>` : ""}
     <div class="field"><label>记录习惯</label><div class="segmented" data-style>${[["detailed", "精细"], ["simple", "简单"]].map(([k, l]) => html`<button type="button" data-v="${k}" class="${v.record_style === k ? "on" : ""}">${l}</button>`)}</div>
       <span class="hint">精细：电量、油量放在表单显眼位置，能耗更准；简单：收进「更多」里</span></div>`;
 }
 
+/** 油量输入按车辆的油表显示方式：百分比 / 格数 / 升，提交时统一换算成百分比。 */
+function fuelUnit(v) {
+  if (v.fuel_gauge_mode === "liters" && v.tank_capacity_l) return { unit: "L", ph: `0–${num(v.tank_capacity_l)}`, toPct: (x) => (x / v.tank_capacity_l) * 100, fromPct: (p) => +((p / 100) * v.tank_capacity_l).toFixed(1) };
+  if (v.fuel_gauge_mode === "bars" && v.fuel_gauge_bars) return { unit: `/${v.fuel_gauge_bars} 格`, ph: `0–${v.fuel_gauge_bars}`, toPct: (x) => (x / v.fuel_gauge_bars) * 100, fromPct: (p) => Math.round((p / 100) * v.fuel_gauge_bars) };
+  return { unit: "%", ph: "0–100", toPct: (x) => x, fromPct: (p) => p };
+}
+
 function step3(st) {
   const s = st.start;
   const t = st.v.energy_type;
-  const modes = [["existing", "已经开了一段时间", "填提车和现在的状态，历史可以粗略估算"], ["new", "新车，从现在开始记", "只填当前里程和状态"], ["skip", "以后再说", "第一条记录会自动作为起点"]];
+  const fu = fuelUnit(st.v);
+  const modes = [
+    ["existing", "已经开了一段时间", "从现在开始记，以前的记录记得多少补多少，不补也能用"],
+    ["new", "新车，刚提车", "从提车这一刻开始记"],
+    ["skip", "以后再说", "第一条记录会自动作为起点"],
+  ];
+  const fuelNow = s.current_fuel_pct != null ? fu.fromPct(s.current_fuel_pct) : "";
   return html`<div class="mode-list">${modes.map(([k, l, d]) => html`<button type="button" class="mode-tile ${s.mode === k ? "on" : ""}" data-mode="${k}"><span class="radio"></span><span><b>${l}</b><small>${d}</small></span></button>`)}</div>
+    ${s.mode !== "skip" ? html`
+      <div class="sub-title">${s.mode === "new" ? "提车时的状态" : "现在的状态"}</div>
+      <div class="grid-3">
+        <div class="field"><label>当前里程 *</label><div class="input-wrap"><input class="input num" name="current_odo" inputmode="numeric" value="${s.current_odo ?? ""}"><span class="unit">km</span></div></div>
+        ${hasFuel(t) ? html`<div class="field"><label>当前油量</label><div class="input-wrap"><input class="input num" name="current_fuel" inputmode="decimal" value="${fuelNow}"><span class="unit">${fu.unit}</span></div></div>` : ""}
+        ${hasElec(t) ? html`<div class="field"><label>当前电量</label><div class="input-wrap"><input class="input num" name="current_soc" inputmode="decimal" value="${s.current_soc ?? ""}"><span class="unit">%</span></div></div>` : ""}
+      </div>
+      <p class="tiny muted">油量、电量不确定可以不填；填了的话，下次加油或充电时就能算出第一段能耗。</p>` : ""}
     ${s.mode === "existing" ? html`
-      <div class="sub-title">提车时</div>
-      <div class="grid-2"><div class="field"><label>提车日期</label><input class="input" type="date" name="delivery_date" value="${st.v.delivery_date || ""}" max="${todayISO()}"></div>
-        <div class="field"><label>提车里程</label><div class="input-wrap"><input class="input num" name="delivery_odo" inputmode="numeric" value="${s.delivery_odo ?? ""}" placeholder="如 12"><span class="unit">km</span></div></div></div>
-      ${hasFuel(t) ? html`<div class="grid-3"><div class="field"><label>出厂自带油</label><div class="input-wrap"><input class="input num" name="factory_fuel_l" inputmode="decimal" value="${st.v.factory_fuel_l}"><span class="unit">L</span></div></div>
-        <div class="field"><label>提车时加了</label><div class="input-wrap"><input class="input num" name="delivery_fill_l" inputmode="decimal" value="${s.delivery_fill_l ?? ""}" placeholder="没加不填"><span class="unit">L</span></div></div>
-        <div class="field"><label>花了</label><div class="input-wrap"><input class="input num" name="delivery_fill_yuan" inputmode="decimal" value="${s.delivery_fill_yuan ?? ""}"><span class="unit">元</span></div></div></div>
-        <p class="tiny muted">出厂自带油量记得就改成实际值（比如当时油表读数 × 油箱容积），不记得就用默认 5L。</p>` : ""}
-      <div class="sub-title">现在</div>` : ""}
-    ${s.mode !== "skip" ? html`<div class="grid-3">
-      <div class="field"><label>当前里程</label><div class="input-wrap"><input class="input num" name="current_odo" inputmode="numeric" value="${s.current_odo ?? ""}"><span class="unit">km</span></div></div>
-      ${hasFuel(t) ? html`<div class="field"><label>当前油量</label><div class="input-wrap"><input class="input num" name="current_fuel_pct" inputmode="decimal" value="${s.current_fuel_pct ?? ""}" placeholder="可不填"><span class="unit">%</span></div></div>` : ""}
-      ${hasElec(t) ? html`<div class="field"><label>当前电量</label><div class="input-wrap"><input class="input num" name="current_soc" inputmode="decimal" value="${s.current_soc ?? ""}" placeholder="可不填"><span class="unit">%</span></div></div>` : ""}
-    </div>` : ""}
-    ${s.mode === "existing" ? html`<details class="more" ${Object.keys(st.summary).length ? "open" : ""}><summary>${raw(icon("down", 16))}补一笔历史汇总（可选）</summary>
-      <p class="tiny muted">提车到现在没逐条记的加油、充电，知道大概总数就填，记不清可以跳过，不影响使用。<br>数据来源：家充桩 App 的累计度数、电费账单、支付宝/微信账单里搜「加油」「充电」。</p>
-      ${hasFuel(t) ? html`<div class="grid-3"><div class="field"><label>加油合计</label><div class="input-wrap"><input class="input num" name="s_fuel_yuan" inputmode="decimal" value="${st.summary.s_fuel_yuan ?? ""}"><span class="unit">元</span></div></div>
-        <div class="field"><label>或升数</label><div class="input-wrap"><input class="input num" name="s_fuel_l" inputmode="decimal" value="${st.summary.s_fuel_l ?? ""}"><span class="unit">L</span></div></div>
-        <div class="field"><label>平均油价</label><div class="input-wrap"><input class="input num" name="s_fuel_price" inputmode="decimal" value="${st.summary.s_fuel_price ?? ""}" placeholder="7.5"><span class="unit">元/L</span></div></div></div>` : ""}
-      ${hasElec(t) ? html`<div class="grid-3"><div class="field"><label>充电合计</label><div class="input-wrap"><input class="input num" name="s_elec_kwh" inputmode="decimal" value="${st.summary.s_elec_kwh ?? ""}"><span class="unit">kWh</span></div></div>
-        <div class="field"><label>花了</label><div class="input-wrap"><input class="input num" name="s_elec_yuan" inputmode="decimal" value="${st.summary.s_elec_yuan ?? ""}"><span class="unit">元</span></div></div>
-        <div class="field"><label>平均电价</label><div class="input-wrap"><input class="input num" name="s_elec_price" inputmode="decimal" value="${st.summary.s_elec_price ?? ""}" placeholder="0.6"><span class="unit">元/度</span></div></div></div>` : ""}
-    </details>` : ""}`;
+      <details class="more" ${s.delivery_odo != null || st.v.delivery_date ? "open" : ""}><summary>${raw(icon("down", 16))}提车信息（记得就填，可跳过）</summary>
+        <p class="tiny muted">提车日期和提车里程都填了，才能算「提车至今」的里程和粗略能耗；二手车或记不清就跳过，不影响以后的记录。</p>
+        <div class="grid-2"><div class="field"><label>提车日期</label><input class="input" type="date" name="delivery_date" value="${st.v.delivery_date || ""}" max="${todayISO()}"></div>
+          <div class="field"><label>提车里程</label><div class="input-wrap"><input class="input num" name="delivery_odo" inputmode="numeric" value="${s.delivery_odo ?? ""}" placeholder="新车一般 0–50"><span class="unit">km</span></div></div></div>
+        ${hasFuel(t) ? html`<div class="grid-3"><div class="field"><label>出厂自带油</label><div class="input-wrap"><input class="input num" name="factory_fuel_l" inputmode="decimal" value="${st.v.factory_fuel_l}"><span class="unit">L</span></div></div>
+          <div class="field"><label>提车时加了</label><div class="input-wrap"><input class="input num" name="delivery_fill_l" inputmode="decimal" value="${s.delivery_fill_l ?? ""}" placeholder="没加不填"><span class="unit">L</span></div></div>
+          <div class="field"><label>花了</label><div class="input-wrap"><input class="input num" name="delivery_fill_yuan" inputmode="decimal" value="${s.delivery_fill_yuan ?? ""}"><span class="unit">元</span></div></div></div>` : ""}
+      </details>
+      <details class="more" ${Object.keys(st.summary).length ? "open" : ""}><summary>${raw(icon("down", 16))}历史汇总（可选）</summary>
+        <p class="tiny muted">之前没逐条记的加油、充电，知道大概总数就填，只用于花费统计和长期粗略能耗。来源：家充桩 App 累计度数、电费账单、支付宝/微信账单里搜「加油」「充电」。</p>
+        <div class="field"><label>从哪天开始算</label><input class="input" type="date" name="s_start" value="${st.summary.s_start ?? ""}" max="${todayISO()}"><span class="hint">不填就从提车日期第二天开始；没填提车日期时必须填</span></div>
+        ${hasFuel(t) ? html`<div class="grid-3"><div class="field"><label>加油合计</label><div class="input-wrap"><input class="input num" name="s_fuel_yuan" inputmode="decimal" value="${st.summary.s_fuel_yuan ?? ""}"><span class="unit">元</span></div></div>
+          <div class="field"><label>或升数</label><div class="input-wrap"><input class="input num" name="s_fuel_l" inputmode="decimal" value="${st.summary.s_fuel_l ?? ""}"><span class="unit">L</span></div></div>
+          <div class="field"><label>平均油价</label><div class="input-wrap"><input class="input num" name="s_fuel_price" inputmode="decimal" value="${st.summary.s_fuel_price ?? ""}" placeholder="7.5"><span class="unit">元/L</span></div></div></div>` : ""}
+        ${hasElec(t) ? html`<div class="grid-3"><div class="field"><label>充电合计</label><div class="input-wrap"><input class="input num" name="s_elec_kwh" inputmode="decimal" value="${st.summary.s_elec_kwh ?? ""}"><span class="unit">kWh</span></div></div>
+          <div class="field"><label>花了</label><div class="input-wrap"><input class="input num" name="s_elec_yuan" inputmode="decimal" value="${st.summary.s_elec_yuan ?? ""}"><span class="unit">元</span></div></div>
+          <div class="field"><label>平均电价</label><div class="input-wrap"><input class="input num" name="s_elec_price" inputmode="decimal" value="${st.summary.s_elec_price ?? ""}" placeholder="0.6"><span class="unit">元/度</span></div></div></div>` : ""}
+      </details>` : ""}`;
 }
 
 function step4(st) {
@@ -202,8 +220,16 @@ function read(f, st) {
   if (st.step === 3) {
     if (g("delivery_date")) st.v.delivery_date = val("delivery_date") || null;
     if (g("factory_fuel_l")) st.v.factory_fuel_l = toNum(val("factory_fuel_l")) ?? 5;
-    for (const n of ["delivery_odo", "delivery_fill_l", "delivery_fill_yuan", "current_odo", "current_fuel_pct", "current_soc"]) {
+    for (const n of ["delivery_odo", "delivery_fill_l", "delivery_fill_yuan", "current_odo", "current_soc"]) {
       if (g(n)) st.start[n] = toNum(val(n));
+    }
+    if (g("current_fuel")) {
+      const x = toNum(val("current_fuel"));
+      st.start.current_fuel_pct = x == null ? null : Math.min(Math.max(fuelUnit(st.v).toPct(x), 0), 100);
+    }
+    if (g("s_start")) {
+      if (val("s_start")) st.summary.s_start = val("s_start");
+      else delete st.summary.s_start;
     }
     for (const n of ["s_fuel_yuan", "s_fuel_l", "s_fuel_price", "s_elec_kwh", "s_elec_yuan", "s_elec_price"]) {
       if (g(n)) {
@@ -226,9 +252,16 @@ function validateStep(st) {
     if (st.v.battery_usable_kwh != null && (st.v.battery_usable_kwh <= 0 || st.v.battery_usable_kwh > 300)) return "电池容量不太对";
   }
   if (st.step === 3 && st.start.mode !== "skip") {
-    if (st.start.current_odo == null) return "请填写当前里程";
-    if (st.start.mode === "existing" && st.start.delivery_odo != null && st.start.delivery_odo > st.start.current_odo) return "提车里程不能大于当前里程";
-    for (const n of ["current_fuel_pct", "current_soc"]) if (st.start[n] != null && (st.start[n] < 0 || st.start[n] > 100)) return "油量和电量要在 0–100% 之间";
+    const s = st.start;
+    if (s.current_odo == null) return "请填写当前里程";
+    if (s.current_soc != null && (s.current_soc < 0 || s.current_soc > 100)) return "电量要在 0–100% 之间";
+    if (s.mode === "existing") {
+      if (s.delivery_odo != null && s.delivery_odo > s.current_odo) return "提车里程不能大于当前里程";
+      const hasDelivery = st.v.delivery_date && s.delivery_odo != null;
+      if (s.delivery_fill_l && !hasDelivery) return "填「提车时加了多少油」需要同时填提车日期和提车里程";
+      const sumData = ["s_fuel_yuan", "s_fuel_l", "s_elec_kwh", "s_elec_yuan"].some((k) => st.summary[k] != null);
+      if (sumData && !st.summary.s_start && !st.v.delivery_date) return "历史汇总需要填「从哪天开始算」";
+    }
   }
   return "";
 }
@@ -246,11 +279,13 @@ function buildPayload(st) {
       delivery_fill_cents: s.delivery_fill_yuan != null ? Math.round(s.delivery_fill_yuan * 100) : null,
       current_odo: s.current_odo, current_fuel_pct: s.current_fuel_pct ?? null, current_soc: s.current_soc ?? null,
     };
-    if (s.mode === "existing") body.initial_odometer_km = s.delivery_odo ?? null;
+    // 只填了提车里程没填日期时用不上，不发给后端
+    if (s.mode !== "existing" || !st.v.delivery_date) body.start.delivery_odo = null;
   }
   const sm = st.summary;
   if (s.mode === "existing" && Object.keys(sm).length) {
     body.summary = {
+      start_date: sm.s_start ?? null,
       fuel_liters: sm.s_fuel_l ?? null, fuel_cents: sm.s_fuel_yuan != null ? Math.round(sm.s_fuel_yuan * 100) : null, fuel_price: sm.s_fuel_price ?? null,
       elec_kwh: sm.s_elec_kwh ?? null, elec_cents: sm.s_elec_yuan != null ? Math.round(sm.s_elec_yuan * 100) : null, elec_price: sm.s_elec_price ?? null,
     };
@@ -345,7 +380,8 @@ export async function vehiclePage() {
 
 function issueAction(i, editable) {
   if (!editable) return "";
-  const map = { fix_missed: "补一条", record_fuel: "记加油", edit_vehicle: "去填写", finish_charge: "结束", open_summaries: "查看", filter_estimated: "查看" };
+  const map = { fix_missed: "补一条", record_fuel: "记加油", edit_vehicle: "去填写", finish_charge: "结束", open_summaries: "查看",
+    filter_estimated: "查看", fix_delivery: "修正", open_records: "去看看" };
   return map[i.action] ? html`<button class="btn btn-sm btn-soft" data-act="${i.action}" data-key="${i.key}">${map[i.action]}</button>` : "";
 }
 
@@ -421,12 +457,47 @@ async function issueGo(v, act, key) {
     emit("data-changed");
   } else if (act === "record_fuel") openRecordForm({ kind: "fuel" });
   else if (act === "edit_vehicle") editVehicle(v);
-  else if (act === "filter_estimated") navigate("/records");
+  else if (act === "filter_estimated" || act === "open_records") navigate("/records");
+  else if (act === "fix_delivery") {
+    const h = await api(`/api/vehicles/${v.id}/health`);
+    const i = h.issues.find((x) => x.key === key);
+    if (i) deliverySheet(v, i);
+  }
   else if (act === "finish_charge") {
     const id = +key.split(":")[1];
     const r = await api(`/api/records/${id}`);
     openRecordForm({ record: { ...r, type: "record" }, vehicle: v, finish: true });
   }
+}
+
+function deliverySheet(v, issue) {
+  sheet({
+    title: "修正提车信息",
+    render(body, ctx) {
+      body.innerHTML = String(html`<div class="stack">
+        <p class="small muted">会同时修改「提车」快照和提车当天的加油记录。不记得提车里程的话，可以把这两条记录删掉，从记账起点开始算也完全没问题。</p>
+        <div class="grid-2"><div class="field"><label>提车日期</label><input class="input" type="date" name="d" value="${issue.delivery_date || ""}" max="${todayISO()}"></div>
+          <div class="field"><label>提车里程</label><div class="input-wrap"><input class="input num" name="o" inputmode="numeric" placeholder="新车一般 0–50"><span class="unit">km</span></div></div></div>
+        <div class="form-error"></div></div>`);
+      ctx.setFoot(`<button class="btn btn-primary grow" data-ok>${icon("check", 18)}保存</button>`);
+      $("[data-ok]", ctx.foot).onclick = async (e) => {
+        const o = toNum($("[name=o]", body).value);
+        if (o == null) return ($(".form-error", body).textContent = "请填写提车里程");
+        setLoading(e.currentTarget, true);
+        try {
+          await api(`/api/vehicles/${v.id}/delivery`, { method: "POST", body: { odometer_km: o, delivery_date: $("[name=d]", body).value || null } });
+          await loadVehicles();
+          ctx.close();
+          emit("data-changed");
+          toast("已修正提车里程，能耗和里程已重新计算");
+        } catch (ex) {
+          $(".form-error", body).textContent = ex.message;
+        } finally {
+          setLoading(e.currentTarget, false);
+        }
+      };
+    },
+  });
 }
 
 function roleSheet(v, m) {

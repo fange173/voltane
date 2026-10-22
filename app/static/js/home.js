@@ -272,7 +272,7 @@ function historyCard(v, h) {
   if (h.fuel) rows.push(html`<div><span class="muted tiny">油耗</span><b class="num fuel-c">${num(h.fuel.per100)}</b><small>L${h.fuel.low100 != null ? ` (${num(h.fuel.low100)}–${num(h.fuel.high100)})` : ""}</small></div>`);
   if (h.elec) rows.push(html`<div><span class="muted tiny">电耗</span><b class="num elec-c">${num(h.elec.per100)}</b><small>kWh</small></div>`);
   return html`<div class="card history" id="history-card">
-    <div class="card-head"><span class="card-title">${raw(icon("history", 18))}提车至今</span>
+    <div class="card-head"><span class="card-title">${raw(icon("history", 18))}${h.scope === "delivery" ? "提车至今" : "记账以来"}</span>
       <span class="row">${h.has_summary ? html`<span class="badge">含历史汇总</span>` : ""}<button class="icon-btn" id="history-hide" aria-label="隐藏" style="width:28px;height:28px">${raw(icon("x", 14))}</button></span></div>
     <div class="history-grid">
       <div><span class="muted tiny">${h.days} 天</span><b class="num">${km(h.mileage)}</b><small>km</small></div>
@@ -280,7 +280,8 @@ function historyCard(v, h) {
       ${rows}
       <div><span class="muted tiny">每公里总成本</span><b class="num">${h.total_cost_per_km != null ? "¥" + fixed(h.total_cost_per_km) : "–"}</b></div>
     </div>
-    ${h.fuel || h.elec ? html`<p class="tiny muted">粗略口径：按长期补能总量估算，${h.has_summary ? "包含历史汇总，" : ""}仅供参考</p>` : ""}
+    ${h.summary_before_cents ? html`<p class="tiny muted">另有记账前的历史汇总 ${money(h.summary_before_cents, { digits: 0 })}，那段里程未知，没有计入每公里成本</p>` : ""}
+    ${h.fuel || h.elec ? html`<p class="tiny muted">粗略口径：按长期补能总量估算，仅供参考</p>` : ""}
   </div>`;
 }
 

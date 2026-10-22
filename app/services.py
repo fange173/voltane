@@ -239,6 +239,17 @@ def fmt_num(x, digits=2) -> str:
     return s.rstrip("0").rstrip(".") if "." in s else s
 
 
+def fuel_level_text(pct, v: Optional[Vehicle]) -> str:
+    """按车辆的油表显示方式把油量百分比换成「40%」「19.2L」「3/8 格」。"""
+    if pct is None:
+        return "-"
+    if v is not None and v.fuel_gauge_mode == "liters" and v.tank_capacity_l:
+        return f"{fmt_num(pct / 100 * v.tank_capacity_l, 1)}L"
+    if v is not None and v.fuel_gauge_mode == "bars" and v.fuel_gauge_bars:
+        return f"{round(pct / 100 * v.fuel_gauge_bars)}/{v.fuel_gauge_bars} 格"
+    return f"{fmt_num(pct, 0)}%"
+
+
 CHARGE_LABEL = {"home": "家充", "public_ac": "公共慢充", "dc": "快充", "super": "超充", "swap": "换电"}
 
 

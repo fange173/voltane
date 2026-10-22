@@ -499,7 +499,7 @@ def get_record(rid: int, user: User = Depends(get_current_user), db: Session = D
         for s in lst:
             if s.end_id == rid:
                 d = segment_dict(s, led.params.kwh_per_l)
-                d["explain"] = explain(led, s)
+                d["explain"] = explain(led, s, v)
                 segs.append(d)
     out = record_dict(r, users_map(db, [r.created_by, r.updated_by, r.payer_user_id]))
     out["segments"] = segs

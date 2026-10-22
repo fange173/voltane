@@ -13,7 +13,7 @@ from app.database import DismissedHint, Record, User, Vehicle, localnow
 from app.engine.aggregate import ledger_start_index, odo_observations
 from app.engine.ledger import Ledger, Point
 from app.engine.types import Segment
-from app.services import fmt_num, load_expenses, load_ledger
+from app.services import fmt_num, fuel_level_text, load_expenses, load_ledger
 
 
 def latest_odo_of(obs: list, v: Vehicle) -> Optional[float]:
@@ -43,12 +43,11 @@ def pending_items(db: Session, v: Vehicle, user: User, led: Optional[Ledger] = N
     for h in led.hints:
         if h.key in dismissed:
             continue
-        what = "充电" if h.kind == "missed_charge" else "加油"
-        unit = "%"
-        out.append({
-            "key": h.key, "type": h.kind, "after_id": h.after_id, "before_id": h.before_id,
-            "text": f"疑似漏记一次{what}（{fmt_num(h.from_value, 0)}{unit} → {fmt_num(h.to_value, 0)}{unit}）",
-        })
+        if h.kind == "missed_charge":
+            text = f"疑似漏记一次充电（电量 {fmt_num(h.from_value, 0)}% → {fmt_num(h.to_value, 0)}%）"
+        else:
+            text = f"疑似漏记一次加油（油量 {fuel_level_text(h.from_value, v)} → {fuel_level_text(h.to_value, v)}）"
+        out.append({"key": h.key, "type": h.kind, "after_id": h.after_id, "before_id": h.before_id, "text": text})
     for energy, segs in (("elec", led.elec_segments), ("fuel", led.fuel_segments)):
         for s in segs:
             if not s.anomaly:
@@ -101,6 +100,23 @@ def health_report(db: Session, v: Vehicle, user: User) -> dict:
             add("no_k", "info", "电池容量没填，也还没有带 SOC 的充电记录，电耗暂时只能按充满到充满计算", "edit_vehicle")
         elif led.calib.source == "default":
             add("k_default", "info", "电耗目前按电池容量估算；充电时填一下开始和结束 SOC，会自动校准", None)
+    # 提车快照和记账起点挤在同一里程上（旧版向导没填提车里程时会这样）
+    delivery = next((p for p in led.points if p.rec.snapshot_tag == "delivery"), None)
+    start = next((p for p in led.points if p.rec.snapshot_tag == "ledger_start"), None)
+    if delivery and start and delivery.odo >= start.odo and (start.ts - delivery.ts).days >= 2:
+        add("delivery_odo", "warn", f"提车记录的里程（{delivery.odo:,.0f} km）和记账起点一样，提车到现在的里程会算不出来，请修正提车里程",
+            "fix_delivery", odometer_km=delivery.odo, delivery_date=delivery.ts.date().isoformat())
+    # 时间在后、里程却更小的记录
+    conflicts = []
+    top = None
+    for r in sorted((p.rec for p in led.points if not p.odo_estimated), key=lambda r: (r.ts, r.id)):
+        if top is not None and r.odo < top[0] - 0.5:
+            conflicts.append(f"{r.ts:%m-%d} 的 {r.odo:,.0f} km（之前 {top[1]:%m-%d} 已到 {top[0]:,.0f} km）")
+        if top is None or r.odo > top[0]:
+            top = (r.odo, r.ts)
+    if conflicts:
+        add("odo_order", "warn", f"有 {len(conflicts)} 条记录的里程比更早的记录还小，能耗会算乱：" + "；".join(conflicts[:3]),
+            "open_records")
     est = [p for p in led.points if p.odo_estimated]
     if est:
         add("est_odo", "info", f"有 {len(est)} 条记录的里程是估算的", "filter_estimated")
@@ -125,7 +141,7 @@ def health_report(db: Session, v: Vehicle, user: User) -> dict:
 # ---------- 段计算过程 ----------
 
 
-def _level_text(p: Point, energy: str, side: int, led: Ledger) -> str:
+def _level_text(p: Point, energy: str, side: int, led: Ledger, v: Optional[Vehicle] = None) -> str:
     lv = p.levels(energy)[side]
     if lv is None:
         return "?"
@@ -137,13 +153,13 @@ def _level_text(p: Point, energy: str, side: int, led: Ledger) -> str:
         if side == 0 and r.kind == "fuel" and r.fuel_full and lv.conf == "exact":
             return f"满 − {fmt_num(r.fuel_l)}L"
         tank = led.params.tank_l
-        return f"{fmt_num(lv.value / tank * 100, 0)}% 油" if tank else f"{fmt_num(lv.value)}L"
+        return f"油量 {fuel_level_text(lv.value / tank * 100, v)}" if tank else f"{fmt_num(lv.value)}L"
     if k:
         return f"SOC {fmt_num(lv.value / k, 0)}%"
     return "充满" if side == 1 else f"满 − {fmt_num(r.charge_kwh)}kWh"
 
 
-def explain(led: Ledger, s: Segment) -> dict:
+def explain(led: Ledger, s: Segment, v: Optional[Vehicle] = None) -> dict:
     """把一段的计算拆成「起点存量 − 终点存量 + 期间补能 = 消耗」，前端照着展示算式。"""
     idx = led.point_index()
     energies = ["fuel", "elec"] if s.energy == "combined" else [s.energy]
@@ -162,8 +178,8 @@ def explain(led: Ledger, s: Segment) -> dict:
         unit = "L" if energy == "fuel" else "kWh"
         parts.append({
             "energy": energy,
-            "start": _level_text(a, energy, 1, led),
-            "end": _level_text(b, energy, 0, led),
+            "start": _level_text(a, energy, 1, led, v),
+            "end": _level_text(b, energy, 0, led, v),
             "start_value": round(la.value, 2),
             "end_value": round(lb.value, 2),
             "added": round(added, 2),
