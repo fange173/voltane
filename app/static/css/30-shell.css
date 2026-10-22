@@ -1,0 +1,310 @@
+/* 30-shell.css — 整体布局：手机顶栏 + 底部导航；PC 左侧导航（≥1024），右侧栏（≥1280） */
+.app {
+  min-height: 100dvh;
+}
+.layout {
+  display: block;
+}
+.main {
+  min-width: 0;
+  padding-bottom: calc(var(--nav-h) + var(--safe-b) + 24px);
+}
+.view {
+  padding: 4px 16px 16px;
+  max-width: 980px;
+  margin: 0 auto;
+  animation: view-in 0.28s var(--ease);
+}
+
+/* 顶栏 */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  height: calc(var(--top-h) + var(--safe-t));
+  padding: var(--safe-t) 10px 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--glass);
+  backdrop-filter: saturate(1.6) blur(18px);
+  -webkit-backdrop-filter: saturate(1.6) blur(18px);
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s;
+}
+.topbar.scrolled {
+  border-bottom-color: var(--line);
+}
+.topbar .page-title {
+  display: none;
+  font-size: 17px;
+  font-weight: 700;
+  flex: 1;
+  min-width: 0;
+}
+.vehicle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 12px 0 6px;
+  border-radius: 20px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-1);
+  max-width: 62vw;
+  font-weight: 700;
+  font-size: 15px;
+}
+.vehicle-pill .v-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  flex-shrink: 0;
+}
+.vehicle-pill .v-plate {
+  font-weight: 500;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.vehicle-pill.static {
+  pointer-events: none;
+}
+.top-spacer {
+  flex: 1;
+}
+
+/* 底部导航 */
+.bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  height: calc(var(--nav-h) + var(--safe-b));
+  padding-bottom: var(--safe-b);
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  align-items: center;
+  background: var(--glass);
+  backdrop-filter: saturate(1.6) blur(18px);
+  -webkit-backdrop-filter: saturate(1.6) blur(18px);
+  border-top: 1px solid var(--line);
+}
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-faint);
+  height: 100%;
+  justify-content: center;
+  transition: color 0.15s;
+}
+.nav-item.on {
+  color: var(--brand);
+}
+.nav-fab {
+  justify-self: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 20px;
+  margin-top: -18px;
+  background: linear-gradient(135deg, var(--fuel) 0%, var(--brand) 55%, var(--elec) 110%);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 10px 24px -8px var(--brand), 0 0 0 5px var(--bg);
+  transition: transform 0.15s var(--ease);
+}
+.nav-fab:active {
+  transform: scale(0.93);
+}
+
+/* PC 侧栏 */
+.sidebar {
+  display: none;
+}
+.aside {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .layout {
+    display: grid;
+    grid-template-columns: var(--side-w) minmax(0, 1fr);
+  }
+  .bottom-nav {
+    display: none;
+  }
+  .main {
+    padding-bottom: 40px;
+  }
+  .view {
+    padding: 8px 28px 28px;
+  }
+  .topbar {
+    padding: 0 20px 0 28px;
+    height: 68px;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-bottom: 0;
+  }
+  .topbar .page-title {
+    display: block;
+    font-size: 22px;
+  }
+  .topbar .vehicle-pill {
+    display: none;
+  }
+  .sidebar {
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 20px 14px;
+    border-right: 1px solid var(--line);
+    background: var(--glass);
+    backdrop-filter: blur(18px);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 8px 14px;
+  }
+  .brand-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 11px;
+  }
+  .brand-name {
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+  .brand-sub {
+    font-size: 11px;
+    color: var(--fg-muted);
+    letter-spacing: 0.08em;
+  }
+  .side-vehicle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border-radius: 14px;
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    text-align: left;
+    margin-bottom: 10px;
+  }
+  .side-vehicle .v-dot {
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+    display: grid;
+    place-items: center;
+    color: #fff;
+  }
+  .side-vehicle b {
+    display: block;
+    font-size: 14px;
+  }
+  .side-vehicle small {
+    color: var(--fg-muted);
+    font-size: 12px;
+  }
+  .side-link {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 44px;
+    padding: 0 12px;
+    border-radius: 12px;
+    color: var(--fg-2);
+    font-weight: 600;
+    font-size: 14px;
+    transition: background 0.15s, color 0.15s;
+  }
+  .side-link:hover {
+    background: var(--surface-2);
+  }
+  .side-link.on {
+    background: var(--brand-soft);
+    color: var(--brand);
+  }
+  .side-new {
+    margin: 4px 0 12px;
+  }
+  .side-foot {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border-radius: 14px;
+  }
+  .side-foot:hover {
+    background: var(--surface-2);
+  }
+}
+
+@media (min-width: 1280px) {
+  .layout.with-aside {
+    grid-template-columns: var(--side-w) minmax(0, 1fr) 320px;
+  }
+  .aside {
+    display: block;
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    overflow-y: auto;
+    padding: 24px 20px;
+    border-left: 1px solid var(--line);
+  }
+}
+
+/* 登录页 */
+.auth-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px calc(24px + var(--safe-b));
+}
+.auth-card {
+  width: min(400px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.auth-brand {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.auth-brand img {
+  width: 72px;
+  height: 72px;
+  border-radius: 22px;
+  box-shadow: var(--shadow-2);
+}
+.auth-brand h1 {
+  font-size: 26px;
+  font-weight: 800;
+}
+.auth-brand p {
+  color: var(--fg-muted);
+}

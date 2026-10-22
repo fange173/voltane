@@ -1,0 +1,253 @@
+/* 45-form.css — 记录表单：电量滑杆、油表格子、地点、费用分类、更多 */
+.rec-form {
+  gap: 16px;
+}
+.big-input {
+  font-size: 22px !important;
+  font-weight: 700;
+  min-height: 54px !important;
+}
+.triple .input {
+  padding-left: 12px;
+  padding-right: 40px;
+}
+.triple .unit {
+  right: 10px;
+  font-size: 11px;
+}
+.triple .auto-tag {
+  right: 6px;
+  top: -9px;
+}
+.discount {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+}
+.mini-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--fg-2);
+  cursor: pointer;
+  min-height: 32px;
+}
+.mini-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--brand);
+}
+.big-switch {
+  padding: 4px 14px;
+  border-radius: 14px;
+  background: var(--fuel-soft);
+}
+.big-switch svg {
+  color: var(--fuel-strong);
+  vertical-align: -4px;
+}
+.hint-text {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  background: var(--surface-2);
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+/* 电量 / 油量 */
+.level-field label .lv-val {
+  margin-left: auto;
+  font-weight: 700;
+  color: var(--fg);
+}
+.level-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.lv-num {
+  width: 96px;
+  flex-shrink: 0;
+}
+.lv-num .input {
+  padding-right: 30px;
+}
+.lv-num .unit {
+  right: 10px;
+}
+.lv-num .auto-tag {
+  right: 4px;
+  top: -9px;
+}
+.lv-range {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 10px;
+  border-radius: 5px;
+  --tone: var(--elec);
+  background: linear-gradient(90deg, var(--tone) 0 var(--p, 0%), var(--surface-3) var(--p, 0%));
+  outline: none;
+  min-width: 0;
+}
+.level-field[data-tone="fuel"] .lv-range {
+  --tone: var(--fuel);
+}
+.lv-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--elec);
+  box-shadow: var(--shadow-2);
+}
+.level-field[data-tone="fuel"] .lv-range::-webkit-slider-thumb {
+  border-color: var(--fuel);
+}
+.lv-range::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--elec);
+}
+.lv-range.unset::-webkit-slider-thumb {
+  opacity: 0.35;
+}
+.soc-pair .lv-num {
+  width: 84px;
+}
+@media (max-width: 480px) {
+  .soc-pair {
+    grid-template-columns: 1fr;
+  }
+}
+.bars {
+  display: flex;
+  gap: 5px;
+}
+.bars button {
+  flex: 1;
+  height: 32px;
+  border-radius: 7px;
+  background: var(--surface-3);
+  transition: background 0.12s;
+}
+.bars button.on {
+  background: var(--fuel);
+}
+.gauge-field label .lv-val {
+  margin-left: auto;
+}
+
+/* 更多 */
+details.more {
+  border-radius: 14px;
+  background: var(--surface-2);
+  padding: 0 14px;
+}
+details.more > summary {
+  list-style: none;
+  cursor: pointer;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--fg-2);
+}
+details.more > summary::-webkit-details-marker {
+  display: none;
+}
+details.more > summary svg {
+  transition: transform 0.2s;
+}
+details.more[open] > summary svg {
+  transform: rotate(180deg);
+}
+details.more[open] {
+  padding-bottom: 14px;
+}
+details.more .input {
+  background: var(--surface-1);
+}
+
+/* 开始充电提示 */
+.callout[data-start-charge] {
+  background: var(--elec-soft);
+}
+.callout[data-start-charge] > svg {
+  color: var(--elec-strong);
+}
+
+/* 费用分类 */
+.cat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+@media (min-width: 560px) {
+  .cat-grid {
+    grid-template-columns: repeat(6, 1fr);
+  }
+}
+.cat-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 2px;
+  border-radius: 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-2);
+  border: 1.5px solid transparent;
+  background: var(--surface-2);
+}
+.cat-tile.on {
+  border-color: var(--expense);
+  background: var(--expense-soft);
+  color: var(--expense-strong);
+}
+.ins-items {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.ins-items .input {
+  padding-left: 64px;
+}
+.ins-name {
+  position: absolute;
+  left: 12px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+/* 峰谷电价 */
+.tariff-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr 1.2fr auto;
+  gap: 6px;
+  align-items: center;
+}
+.tariff-row .input {
+  padding: 8px 10px;
+  min-height: 42px;
+  font-size: 15px;
+}
+@media (max-width: 480px) {
+  .tariff-row {
+    grid-template-columns: 1fr auto 1fr auto;
+  }
+  .tariff-row .input-wrap {
+    grid-column: 1 / 4;
+  }
+}

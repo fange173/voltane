@@ -1,0 +1,36 @@
+services:
+  voltane:
+    # 大多数 NAS 是 x86_64（amd64）；ARM 的 NAS 改成 linux/arm64
+    platform: linux/amd64
+    image: fange173/voltane:latest
+    build: .
+    container_name: voltane
+    ports:
+      - "8086:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      # 必改：32 位以上随机字符串
+      - SECRET_KEY=change-me-to-a-long-random-secret
+      - DATABASE_URL=sqlite:////app/data/voltane.db
+      - TZ=Asia/Shanghai
+      - LOGIN_MAX_FAILURES=8
+      - LOGIN_LOCK_SECONDS=300
+      # 部署在 nginx 等反向代理之后时才设为 true
+      - TRUST_PROXY_HEADERS=false
+      # HTTPS 反代后设为 true，使 Cookie 仅走加密信道
+      - COOKIE_SECURE=false
+      - ENABLE_DOCS=false
+      # 无法用 admin/admin123 登录时：改为 true，重启一次成功后再改回 false
+      - RESET_ADMIN_PASSWORD=false
+      # 每日凌晨 3 点后自动备份到 data/backups，保留份数
+      - BACKUP_KEEP=14
+      - TRASH_RETENTION_DAYS=30
+      - ACTIVITY_RETENTION_DAYS=180
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped

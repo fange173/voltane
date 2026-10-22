@@ -1,0 +1,150 @@
+/* 00-tokens.css — 设计令牌。组件只引用这里的变量，不写裸色值。
+   颜色语义固定：油 = 琥珀 --fuel，电 = 青绿 --elec，费用 = 紫 --expense，快照/静置 = 灰蓝 --snapshot。 */
+:root {
+  color-scheme: light;
+
+  --bg: #f3f4f8;
+  --bg-grad: radial-gradient(1200px 600px at 10% -10%, #e9ebff 0%, transparent 60%),
+             radial-gradient(900px 500px at 110% 0%, #e3f7ef 0%, transparent 55%);
+  --surface-1: #ffffff;
+  --surface-2: #f6f7fb;
+  --surface-3: #eceef5;
+  --glass: rgba(255, 255, 255, 0.82);
+  --line: rgba(20, 24, 45, 0.07);
+  --line-strong: rgba(20, 24, 45, 0.13);
+  --scrim: rgba(12, 14, 28, 0.42);
+
+  --fg: #151827;
+  --fg-2: #3b4058;
+  --fg-muted: #6b7088;
+  --fg-faint: #a0a4b8;
+
+  --brand: #4f46e5;
+  --brand-strong: #4338ca;
+  --brand-soft: rgba(79, 70, 229, 0.1);
+  --on-brand: #ffffff;
+
+  --fuel: #f59e0b;
+  --fuel-strong: #d97706;
+  --fuel-soft: rgba(245, 158, 11, 0.13);
+  --elec: #10b981;
+  --elec-strong: #059669;
+  --elec-soft: rgba(16, 185, 129, 0.13);
+  --expense: #8b5cf6;
+  --expense-strong: #7c3aed;
+  --expense-soft: rgba(139, 92, 246, 0.12);
+  --snapshot: #64748b;
+  --snapshot-soft: rgba(100, 116, 139, 0.13);
+
+  --ok: #16a34a;
+  --ok-soft: rgba(22, 163, 74, 0.12);
+  --warn: #d97706;
+  --warn-soft: rgba(217, 119, 6, 0.13);
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.1);
+
+  --radius-xs: 8px;
+  --radius-sm: 12px;
+  --radius: 18px;
+  --radius-lg: 24px;
+  --shadow-1: 0 1px 2px rgba(20, 24, 45, 0.04), 0 1px 1px rgba(20, 24, 45, 0.03);
+  --shadow-2: 0 6px 24px -8px rgba(20, 24, 45, 0.14), 0 2px 6px rgba(20, 24, 45, 0.04);
+  --shadow-3: 0 24px 60px -16px rgba(20, 24, 45, 0.3);
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "HarmonyOS Sans SC", "MiSans",
+    "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+  --font-num: "SF Pro Display", -apple-system, "DIN Alternate", "Segoe UI", Roboto, sans-serif;
+
+  --nav-h: 64px;
+  --top-h: 56px;
+  --side-w: 248px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0b0d14;
+    --bg-grad: radial-gradient(1000px 500px at 0% -10%, rgba(99, 91, 255, 0.14) 0%, transparent 60%),
+               radial-gradient(800px 500px at 110% 0%, rgba(16, 185, 129, 0.08) 0%, transparent 55%);
+    --surface-1: #151824;
+    --surface-2: #1b1f2e;
+    --surface-3: #242a3b;
+    --glass: rgba(21, 24, 36, 0.82);
+    --line: rgba(230, 233, 255, 0.07);
+    --line-strong: rgba(230, 233, 255, 0.14);
+    --scrim: rgba(0, 0, 0, 0.6);
+    --fg: #eef0f8;
+    --fg-2: #c9cde0;
+    --fg-muted: #8d93ab;
+    --fg-faint: #5d6380;
+    --brand: #8b85ff;
+    --brand-strong: #a29dff;
+    --brand-soft: rgba(139, 133, 255, 0.16);
+    --on-brand: #0b0b1a;
+    --fuel: #fbbf24;
+    --fuel-strong: #fcd34d;
+    --fuel-soft: rgba(251, 191, 36, 0.14);
+    --elec: #34d399;
+    --elec-strong: #6ee7b7;
+    --elec-soft: rgba(52, 211, 153, 0.14);
+    --expense: #a78bfa;
+    --expense-strong: #c4b5fd;
+    --expense-soft: rgba(167, 139, 250, 0.15);
+    --snapshot: #94a3b8;
+    --snapshot-soft: rgba(148, 163, 184, 0.14);
+    --ok: #4ade80;
+    --ok-soft: rgba(74, 222, 128, 0.13);
+    --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, 0.14);
+    --danger: #f87171;
+    --danger-soft: rgba(248, 113, 113, 0.13);
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-2: 0 8px 28px -10px rgba(0, 0, 0, 0.6);
+    --shadow-3: 0 24px 60px -16px rgba(0, 0, 0, 0.75);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0d14;
+  --bg-grad: radial-gradient(1000px 500px at 0% -10%, rgba(99, 91, 255, 0.14) 0%, transparent 60%),
+             radial-gradient(800px 500px at 110% 0%, rgba(16, 185, 129, 0.08) 0%, transparent 55%);
+  --surface-1: #151824;
+  --surface-2: #1b1f2e;
+  --surface-3: #242a3b;
+  --glass: rgba(21, 24, 36, 0.82);
+  --line: rgba(230, 233, 255, 0.07);
+  --line-strong: rgba(230, 233, 255, 0.14);
+  --scrim: rgba(0, 0, 0, 0.6);
+  --fg: #eef0f8;
+  --fg-2: #c9cde0;
+  --fg-muted: #8d93ab;
+  --fg-faint: #5d6380;
+  --brand: #8b85ff;
+  --brand-strong: #a29dff;
+  --brand-soft: rgba(139, 133, 255, 0.16);
+  --on-brand: #0b0b1a;
+  --fuel: #fbbf24;
+  --fuel-strong: #fcd34d;
+  --fuel-soft: rgba(251, 191, 36, 0.14);
+  --elec: #34d399;
+  --elec-strong: #6ee7b7;
+  --elec-soft: rgba(52, 211, 153, 0.14);
+  --expense: #a78bfa;
+  --expense-strong: #c4b5fd;
+  --expense-soft: rgba(167, 139, 250, 0.15);
+  --snapshot: #94a3b8;
+  --snapshot-soft: rgba(148, 163, 184, 0.14);
+  --ok: #4ade80;
+  --ok-soft: rgba(74, 222, 128, 0.13);
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.14);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.13);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 8px 28px -10px rgba(0, 0, 0, 0.6);
+  --shadow-3: 0 24px 60px -16px rgba(0, 0, 0, 0.75);
+}
