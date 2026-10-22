@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.access import require_vehicle
 from app.auth import require_admin, get_current_user, user_brief
-from app.constants import EXPENSE_CATEGORIES
+from app.constants import EXPENSE_CATEGORIES, RECORD_KINDS
 from app.database import (
     DATABASE_URL,
     Expense,
@@ -344,7 +344,7 @@ async def import_json(vehicle_id: int, file: UploadFile = File(...), user: User 
     cols = {c.name for c in Record.__table__.columns}
     n_rec = n_exp = 0
     for r in data.get("records", []):
-        if r.get("status") == "in_progress":
+        if r.get("status") == "in_progress" or r.get("kind") not in RECORD_KINDS or not r.get("occurred_at"):
             continue
         row = Record(vehicle_id=v.id, created_by=user.id, updated_by=user.id, payer_user_id=user.id,
                      source="import", import_batch_id=batch)
@@ -354,11 +354,12 @@ async def import_json(vehicle_id: int, file: UploadFile = File(...), user: User 
                                         "occurred_at", "estimated_fields"):
                 setattr(row, k, val)
         row.occurred_at = _dt(r["occurred_at"])
-        row.estimated_fields = json.dumps(r.get("estimated_fields") or [])
+        row.status = "done"
+        row.estimated_fields = json.dumps([x for x in (r.get("estimated_fields") or []) if isinstance(x, str)][:20])
         db.add(row)
         n_rec += 1
     for e in data.get("expenses", []):
-        if e.get("category") not in EXPENSE_CATEGORIES:
+        if e.get("category") not in EXPENSE_CATEGORIES or not e.get("occurred_at"):
             continue
         db.add(Expense(vehicle_id=v.id, category=e["category"], title=e.get("title") or "",
                        sub_items=json.dumps(e.get("sub_items") or [], ensure_ascii=False),

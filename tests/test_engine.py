@@ -268,7 +268,8 @@ def test_mileage_and_combined_totals():
     led = build_ledger(VehicleParams(**PHEV), example_a())
     obs = odo_observations(led, [])
     assert mileage(obs, date(2026, 9, 1), date(2026, 9, 30)) == 820
-    assert mileage(obs, date(2026, 9, 4), date(2026, 9, 30)) == 670
+    # 9-03 20:00 到 9-07 20:00 之间按时间插值：9-04 零点约 10157.5
+    assert mileage(obs, date(2026, 9, 4), date(2026, 9, 30)) == 662.5
     t = combined_totals(led.combined_segments)
     assert t["cost_per_km"] == pytest.approx(0.218, abs=0.001)
 
@@ -284,3 +285,12 @@ def test_reminder_status_and_next_due():
     assert evaluate(r, date(2026, 10, 20), 15100, 30)["status"] == "overdue"
     assert next_due(r, date(2026, 10, 25), 14800) == (date(2027, 10, 25), 24800)
     assert add_months(date(2026, 1, 31), 1) == date(2026, 2, 28)
+
+
+def test_mileage_spreads_gap_between_records():
+    obs = [(datetime(2026, 1, 1), 0.0), (datetime(2026, 3, 2), 6000.0)]
+    # 60 天走了 6000km：2 月 28 天约 2800km，不会全部算在 3 月
+    assert mileage(obs, date(2026, 2, 1), date(2026, 2, 28)) == 2800
+    assert mileage(obs, date(2026, 3, 1), date(2026, 3, 31)) == 100
+    # 录错的回退里程不会算成负数
+    assert mileage([(datetime(2026, 1, 1), 100.0), (datetime(2026, 1, 2), 90.0)], date(2026, 1, 1), date(2026, 1, 31)) == 0

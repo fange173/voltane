@@ -390,17 +390,23 @@ export async function yearPage({ params }) {
       ${v.has_fuel ? html`<div class="kpi card"><div class="kpi-label">平均油耗</div><div class="kpi-value num">${r.fuel?.drive ? num(r.fuel.drive.per100) : "–"}<small>L</small></div></div>` : ""}
       ${v.has_elec ? html`<div class="kpi card"><div class="kpi-label">平均电耗</div><div class="kpi-value num">${r.elec?.drive ? num(r.elec.drive.per100) : "–"}<small>kWh</small></div></div>` : ""}
     </div>
-    <div class="card chart-card"><div class="card-head"><span class="card-title">每月里程与花费</span></div><div id="y-chart" class="chart-box"></div></div>
+    <div class="grid-2 resp-2">
+      <div class="card"><div class="card-head"><span class="card-title">每月里程</span><span class="card-sub">km</span></div><div id="y-km" class="chart-box"></div></div>
+      <div class="card"><div class="card-head"><span class="card-title">每月花费</span><span class="card-sub">元</span></div><div id="y-cost" class="chart-box"></div></div>
+    </div>
     <div class="grid-2 resp-2">
       ${d.best_month ? html`<div class="card highlight"><span class="tiny muted">跑得最多的月份</span><b class="num">${+d.best_month.month.slice(5)} 月 · ${km(d.best_month.mileage)} km</b></div>` : ""}
       ${top ? html`<div class="card highlight"><span class="tiny muted">最贵的一笔</span><b>${top.type === "expense" ? EXPENSE_LABEL[top.category] + (top.title ? " · " + top.title : "") : top.kind === "fuel" ? "加油" : "充电"} · <span class="num">${money(top.type === "expense" ? top.amount_cents : top.paid_cents)}</span></b><span class="tiny muted">${fmtDate(top.occurred_at, { year: true })}</span></div>` : ""}
       ${r.elec?.idle ? html`<div class="card highlight"><span class="tiny muted">全年静置损耗</span><b class="num">${num(r.elec.idle.amount, 0)} kWh</b><span class="tiny muted">约占用电 ${num((r.elec.idle.share || 0) * 100, 0)}%</span></div>` : ""}
       ${r.home_share != null ? html`<div class="card highlight"><span class="tiny muted">家充占比</span><b class="num">${num(r.home_share * 100, 0)}%</b></div>` : ""}
     </div>`);
-  barChart($("#y-chart", el), {
-    labels: d.months.map((m) => +m.month.slice(5) + "月"),
-    series: [{ name: "里程 km", color: "brand", values: d.months.map((m) => m.mileage) }],
-    line: { name: "花费 ¥", color: "fuel", values: d.months.map((m) => (m.total_cents ? m.total_cents / 100 : null)) },
-    fmt: (x) => Math.round(x),
+  const labels = d.months.map((m) => +m.month.slice(5) + "月");
+  barChart($("#y-km", el), { labels, series: [{ name: "里程", color: "brand", values: d.months.map((m) => m.mileage) }], unit: " km", fmt: (x) => Math.round(x) });
+  barChart($("#y-cost", el), {
+    labels, stacked: true, fmt: (x) => (x >= 1000 ? (x / 1000).toFixed(1) + "k" : Math.round(x)), tipFmt: (x) => "¥" + num(x),
+    series: [
+      { name: "能源", color: "elec", values: d.months.map((m) => m.energy_cents / 100) },
+      { name: "其他", color: "expense", values: d.months.map((m) => (m.total_cents - m.energy_cents) / 100) },
+    ],
   });
 }

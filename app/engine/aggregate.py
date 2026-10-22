@@ -37,19 +37,34 @@ def odo_observations(led: Ledger, expenses: list[Exp]) -> list[tuple]:
     return obs
 
 
+def _odo_at(obs: list[tuple], t: datetime, initial_odo: Optional[float]) -> float:
+    """t 时刻的里程：在前后两次观测之间按时间线性插值；早于第一次观测时用初始里程。"""
+    first_t, first_o = obs[0]
+    if t <= first_t:
+        return initial_odo if (initial_odo is not None and initial_odo <= first_o) else first_o
+    prev_t, prev_o = obs[0]
+    for ot, oo in obs[1:]:
+        if t <= ot:
+            span = (ot - prev_t).total_seconds()
+            frac = (t - prev_t).total_seconds() / span if span > 0 else 1
+            return prev_o + (oo - prev_o) * frac
+        prev_t, prev_o = ot, oo
+    return prev_o
+
+
 def mileage(obs: list[tuple], d0: date, d1: date, initial_odo: Optional[float] = None) -> float:
-    """范围内最大里程 − 范围开始前最后的里程；没有更早的观测时用初始里程或范围内最小值。"""
-    inside = [o for t, o in obs if d0 <= _d(t) <= d1]
-    if not inside:
+    """范围内行驶的里程。两次记录之间的里程按天数平均分摊，补录前的长时间空档不会全算进某一个月。"""
+    if not obs:
         return 0.0
-    before = [o for t, o in obs if _d(t) < d0]
-    if before:
-        start = max(before)
-    elif initial_odo is not None and initial_odo <= min(inside):
-        start = initial_odo
-    else:
-        start = min(inside)
-    return round(max(max(inside) - start, 0.0), 1)
+    # 里程按时间取累计最大值，避免录错的回退把结果算成负数
+    mono = []
+    top = None
+    for t, o in obs:
+        top = o if top is None else max(top, o)
+        mono.append((t if isinstance(t, datetime) else datetime.combine(t, datetime.min.time()), top))
+    t0 = datetime.combine(d0, datetime.min.time())
+    t1 = datetime.combine(d1 + timedelta(days=1), datetime.min.time())
+    return round(max(_odo_at(mono, t1, initial_odo) - _odo_at(mono, t0, initial_odo), 0.0), 1)
 
 
 def latest_odo(obs: list[tuple]) -> Optional[float]:

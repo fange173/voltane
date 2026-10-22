@@ -31,6 +31,7 @@ from app.database import (
     utcnow,
 )
 from app.engine.aggregate import odo_observations
+from app.engine.reminders import add_months
 from app.insights import health_report, latest_odo_of
 from app.services import bump, iso, load_expenses, load_ledger, log_activity, users_map, vehicle_dict
 
@@ -194,8 +195,14 @@ def create_vehicle(body: VehicleCreateIn, user: User = Depends(get_current_user)
         if due_odo is None and interval_km and st and st.current_odo is not None:
             due_odo = st.current_odo + interval_km
         due_date = item.due_date
-        if due_date is None and t.get("interval_months") and not interval_km:
-            due_date = None
+        if due_date is None and t.get("interval_months"):
+            # 没填日期时按「提车日（没有就今天）+ 周期」推算，滚动到今天之后
+            base = v.delivery_date or now.date()
+            due_date = add_months(base, t["interval_months"])
+            while due_date <= now.date():
+                due_date = add_months(due_date, t["interval_months"])
+        if due_date is None and due_odo is None:
+            continue
         db.add(Reminder(vehicle_id=None if personal else v.id, owner_user_id=user.id if personal else None,
                         title=t["title"], template_key=t["key"], due_date=due_date, due_odometer_km=due_odo,
                         interval_months=t.get("interval_months"), interval_km=interval_km,

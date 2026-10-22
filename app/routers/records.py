@@ -188,7 +188,9 @@ def _find_duplicate(db: Session, v: Vehicle, r: Record) -> Optional[Record]:
             continue
         same_odo = (c.odometer_km is None and r.odometer_km is None) or (
             c.odometer_km is not None and r.odometer_km is not None and abs(c.odometer_km - r.odometer_km) < 1)
-        if same_odo and (c.paid_cents or 0) == (r.paid_cents or 0):
+        same_levels = r.kind != "snapshot" or (
+            c.soc_before_pct == r.soc_before_pct and c.fuel_level_before_pct == r.fuel_level_before_pct)
+        if same_odo and same_levels and (c.paid_cents or 0) == (r.paid_cents or 0):
             return c
     return None
 

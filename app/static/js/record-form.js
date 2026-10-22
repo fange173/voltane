@@ -70,7 +70,7 @@ function numField(name, label, unit, { ph = "", hint = "", mode = "decimal", cls
 
 function levelField(name, label, { tone = "elec", hint = "" } = {}) {
   return html`<div class="field level-field" data-f="${name}" data-tone="${tone}"><label>${label}<span class="lv-val num"></span></label>
-    <div class="level-row"><input type="range" min="0" max="100" step="5" class="lv-range unset" aria-label="${label}">
+    <div class="level-row"><input type="range" min="0" max="100" step="5" value="0" class="lv-range unset" aria-label="${label}">
       <div class="input-wrap lv-num"><input class="input num" name="${name}" inputmode="decimal" placeholder="–"><span class="auto-tag hidden">自动</span><span class="unit">%</span></div></div>
     ${hint ? html`<span class="hint">${hint}</span>` : ""}</div>`;
 }
@@ -560,7 +560,12 @@ function applyDefaults(form, v, st, kind, keep, preset) {
   }
   // 当前电量 / 油量只做占位提示，不当成值
   const p = st.prefill;
-  if (p?.last_soc != null) $$('input[name="soc_before_pct"]', form).forEach((i) => (i.placeholder = `上次 ${p.last_soc}`));
+  if (p?.last_soc != null) {
+    $$('input[name="soc_before_pct"]', form).forEach((i) => {
+      i.placeholder = String(p.last_soc);
+      i.title = `上次记录后的电量 ${p.last_soc}%`;
+    });
+  }
   if (form.payer_user_id) form.payer_user_id.value = state.user.id;
   $$("[data-t]", form)[0]?.classList.add("on");
 }
@@ -997,7 +1002,8 @@ function afterSave(res, record, startOnly) {
     } });
   }
   if (!seg) {
-    toast(record ? "已保存" : "已记录", { actions });
+    const finished = record?.status === "in_progress";
+    toast(finished ? "充电已结束" : record ? "已保存" : "已记录", { sub: finished && r.charge_kwh ? `本次 ${num(r.charge_kwh)} kWh · ${money(r.paid_cents)}` : "", actions });
     return;
   }
   let text;
