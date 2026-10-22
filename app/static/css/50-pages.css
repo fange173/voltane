@@ -382,7 +382,7 @@
   transition: transform 0.12s var(--ease), box-shadow 0.15s;
   min-width: 0;
 }
-.cal-cell.empty {
+.cal-cell.blank {
   background: transparent;
 }
 .cal-cell.today .cal-num {

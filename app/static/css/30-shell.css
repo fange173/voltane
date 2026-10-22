@@ -175,23 +175,23 @@
     background: var(--glass);
     backdrop-filter: blur(18px);
   }
-  .brand {
+  .side-brand {
     display: flex;
     align-items: center;
     gap: 10px;
     padding: 4px 8px 14px;
   }
-  .brand-logo {
+  .side-brand-logo {
     width: 36px;
     height: 36px;
     border-radius: 11px;
   }
-  .brand-name {
+  .side-brand-name {
     font-size: 18px;
     font-weight: 800;
     letter-spacing: 0.02em;
   }
-  .brand-sub {
+  .side-brand-sub {
     font-size: 11px;
     color: var(--fg-muted);
     letter-spacing: 0.08em;

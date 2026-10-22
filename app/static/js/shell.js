@@ -77,8 +77,8 @@ function renderSidebar() {
   const v = currentVehicle();
   const u = state.user;
   $("#sidebar").innerHTML = String(html`
-    <div class="brand"><img class="brand-logo" src="/static/icon.svg" alt="">
-      <div><div class="brand-name">油电簿</div><div class="brand-sub">VOLTANE</div></div></div>
+    <div class="side-brand"><img class="side-brand-logo" src="/static/icon.svg" alt="">
+      <div><div class="side-brand-name">油电簿</div><div class="side-brand-sub">VOLTANE</div></div></div>
     <button class="side-vehicle" id="side-vehicle">
       ${v ? html`${vehicleDot(v, 20)}<span class="grow"><b class="ellipsis">${v.name}</b><small>${ENERGY_LABEL[v.energy_type]}${v.plate ? " · " + v.plate : ""}</small></span>${raw(icon("down", 16))}`
         : html`<span class="ico sm brand">${raw(icon("plus", 18))}</span><b>添加车辆</b>`}

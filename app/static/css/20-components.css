@@ -455,6 +455,7 @@ textarea.input {
   flex-direction: column;
 }
 .list-item {
+  color: inherit;
   display: flex;
   align-items: center;
   gap: 12px;

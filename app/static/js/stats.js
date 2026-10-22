@@ -287,7 +287,7 @@ async function calendarTab(body, v) {
   const today = todayISO();
   const sel = body.dataset.sel && body.dataset.sel.startsWith(calMonth) ? body.dataset.sel : null;
   const cells = [];
-  for (let i = 0; i < lead; i++) cells.push(html`<div class="cal-cell empty"></div>`);
+  for (let i = 0; i < lead; i++) cells.push(html`<div class="cal-cell blank"></div>`);
   for (let day = 1; day <= daysIn; day++) {
     const key = `${calMonth}-${String(day).padStart(2, "0")}`;
     const info = d.days[key];
