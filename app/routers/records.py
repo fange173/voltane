@@ -292,6 +292,9 @@ def update_record(rid: int, body: RecordIn, user: User = Depends(get_current_use
     _check_payer(db, v.id, r.payer_user_id)
     r.updated_by = user.id
     r.version = (r.version or 1) + 1
+    if r.snapshot_tag == "delivery" and r.odometer_km is not None and not r.odometer_estimated:
+        v.initial_odometer_km = r.odometer_km
+        v.delivery_date = r.occurred_at.date()
     warnings = _warnings(db, v, r)
     bump(v)
     text = ("结束充电，" + record_summary_text(r)) if (was_progress and r.status == "done") else "修改了" + record_summary_text(r)
@@ -310,6 +313,9 @@ def delete_record(rid: int, user: User = Depends(get_current_user), db: Session 
     if not can_delete_entity(role, user, r.created_by):
         raise HTTPException(403, "只能删除自己记的记录")
     r.deleted_at = utcnow()
+    if r.snapshot_tag == "delivery":
+        # 提车快照删了，起始里程也随之失效，否则首月里程仍按旧值计算
+        v.initial_odometer_km = None
     bump(v)
     log_activity(db, v.id, user, "delete", "record", r.id, "删除了" + record_summary_text(r))
     db.commit()
@@ -325,6 +331,8 @@ def restore_record(rid: int, user: User = Depends(get_current_user), db: Session
     if not can_delete_entity(role, user, r.created_by):
         raise HTTPException(403, "只能恢复自己记的记录")
     r.deleted_at = None
+    if r.snapshot_tag == "delivery" and r.odometer_km is not None:
+        v.initial_odometer_km = r.odometer_km
     bump(v)
     log_activity(db, v.id, user, "restore", "record", r.id, "恢复了" + record_summary_text(r))
     db.commit()
@@ -448,8 +456,10 @@ def prefill(vehicle_id: int, kind: Literal["fuel", "charge", "snapshot"] = "fuel
     places = _sorted_places(db, v, user, kind)
     in_progress = db.scalars(select(Record).where(Record.vehicle_id == v.id, Record.status == "in_progress",
                                                   Record.deleted_at.is_(None)).order_by(Record.occurred_at.desc()))
+    last_obs = max(obs, key=lambda o: (o[1], o[0])) if obs else None
     return {
         "last_odo": latest_odo_of(obs, v),
+        "last_odo_ts": last_obs[0].isoformat(timespec="minutes") if last_obs else None,
         "last": record_dict(last) if last else None,
         "last_soc": min(last_soc, 100) if last_soc is not None else None,
         "last_fuel_pct": min(last_fuel_pct, 100) if last_fuel_pct is not None else None,

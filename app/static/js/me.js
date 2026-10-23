@@ -2,7 +2,7 @@
 import { icon } from "./icons.js";
 import { navigate } from "./router.js";
 import { refreshChrome, resetView, setNav, setTitle, view } from "./shell.js";
-import { CHARGE_LABEL, EXPENSE_LABEL, PLACE_KIND, currentVehicle, emit, gradeLabel, loadVehicles, pref, savePref, setVehicle, state } from "./state.js";
+import { CHARGE_LABEL, EXPENSE_LABEL, PLACE_KIND, currentVehicle, emit, gradeLabel, loadVehicles, payerEnabled, pref, savePref, setVehicle, state } from "./state.js";
 import { itemRow } from "./records.js";
 import { avatar, bindSegmented, confirmDialog, emptyState, promptDialog, setLoading, sheet, skeleton, switchRow, toast, toastError } from "./ui.js";
 import { $, $$, api, esc, fmtDate, html, money, num, raw, toNum } from "./util.js";
@@ -29,7 +29,7 @@ export function mePage() {
     <div class="section-title"><span>显示</span></div>
     <div class="card">
       <div class="field"><label>主题</label><div class="segmented" id="theme-seg">${[["auto", "跟随系统"], ["light", "浅色"], ["dark", "深色"]].map(([k, l]) => html`<button data-v="${k}" class="${pref("theme", "auto") === k ? "on" : ""}">${l}</button>`)}</div></div>
-      ${switchRow("show_payer", "记录时显示「付款人」", pref("show_payer", true), "多人共用时按人统计花费")}
+      ${switchRow("show_payer", "启用「付款人」", payerEnabled(), "默认关闭；多人共用一辆车、需要分摊花费时再打开")}
       ${switchRow("place_top", "地点默认选中最常用的", pref("place_default", "none") === "top", "关闭时默认「不记录」")}
       ${switchRow("show_history", "首页显示「提车至今」卡片", !pref("hide_history", false))}
     </div>

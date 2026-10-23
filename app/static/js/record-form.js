@@ -10,6 +10,7 @@ import {
   currentVehicle,
   emit,
   gradeLabel,
+  payerEnabled,
   pref,
   state,
 } from "./state.js";
@@ -148,7 +149,7 @@ export async function openRecordForm({ kind = "fuel", record = null, finish = fa
   if (!kinds.includes(kind)) kind = kinds[0];
 
   let ctxRef;
-  const st = { kind, prefill: null, place: null, est: new Set(), lastEdited: [], time: null };
+  const st = { kind, prefill: null, place: null, est: new Set(), estSticky: new Set(), lastEdited: [], time: null, record };
 
   await sheet({
     title: isEdit ? (finish ? "结束充电" : "编辑" + KIND_TITLE[kind]) : KIND_TITLE[kind],
@@ -183,7 +184,9 @@ function snapshotCommon(body) {
 async function renderForm(body, ctx, v, st, { record, finish = false, keep = null, preset = {} }) {
   const form = $("form", body);
   const kind = st.kind;
-  st.est = new Set(record?.estimated_fields?.filter((n) => Object.values(EST_NAME).includes(n)) || []);
+  // 已保存记录里的估算字段原样保留（仍算估算），用户改了对应字段才去掉
+  st.estSticky = new Set(record?.estimated_fields || []);
+  st.est = new Set(st.estSticky);
   st.lastEdited = [];
   st.place = null;
   form.innerHTML = `<div class="skeleton" style="height:220px"></div>`;
@@ -197,7 +200,7 @@ async function renderForm(body, ctx, v, st, { record, finish = false, keep = nul
     }
   }
   const mems = await members(v.id);
-  const showPayer = mems.length > 1 && pref("show_payer", true);
+  const showPayer = mems.length > 1 && payerEnabled();
   const time = record?.occurred_at || keep?.occurred_at || localISO();
   const detailed = v.record_style !== "simple";
 
@@ -348,7 +351,7 @@ function wireCommon(form, v, st) {
         st.lastEdited = st.lastEdited.filter((n) => n !== t.name);
         if (t.value.trim()) st.lastEdited.push(t.name);
       }
-      if (EST_NAME[t.name]) st.est.delete(EST_NAME[t.name]);
+      unstick(st, t.name);
     }
     recompute(form, v, st);
     saveDraft(form, v, st);
@@ -376,7 +379,7 @@ function wireLevels(form, v, st) {
       range.style.setProperty("--p", range.value + "%");
       range.classList.remove("unset");
       clearAuto(inp);
-      if (EST_NAME[inp.name]) st.est.delete(EST_NAME[inp.name]);
+      unstick(st, inp.name);
       recompute(form, v, st);
       saveDraft(form, v, st);
     });
@@ -403,11 +406,19 @@ function wireLevels(form, v, st) {
       hidden.dataset.user = hidden.value ? "1" : "";
       delete hidden.dataset.auto;
       lit.classList.remove("auto");
-      if (EST_NAME[hidden.name]) st.est.delete(EST_NAME[hidden.name]);
+      unstick(st, hidden.name);
       recompute(form, v, st);
       saveDraft(form, v, st);
     });
   });
+}
+
+/** 用户改了某个字段：去掉它的估算标记（含已保存记录带来的）。 */
+function unstick(st, fieldName) {
+  const n = EST_NAME[fieldName] || { amount: "paid_cents", paid: "paid_cents", odometer_km: "odometer_km" }[fieldName];
+  if (!n) return;
+  st.est.delete(n);
+  st.estSticky.delete(n);
 }
 
 function selectChip(form, sel, name, value) {
@@ -590,16 +601,15 @@ function fillRecord(form, v, st, r, finish) {
     form.odometer_km.disabled = true;
   }
   const est = new Set(r.estimated_fields || []);
+  // 估算值按用户值载入（不会被重新推算清掉），只是显示成灰色斜体提示它是估算的
   const put = (name, val, estName) => {
     const inp = form[name];
     if (!inp || val == null) return;
+    setUser(inp, val);
     if (estName && est.has(estName)) {
-      inp.value = val;
-      inp.dataset.auto = "1";
       inp.classList.add("auto");
-      inp.parentElement.querySelector(".auto-tag")?.classList.remove("hidden");
-      syncLevel(inp);
-    } else setUser(inp, val);
+      inp.closest("[data-liters]")?.querySelector("[data-lit]")?.classList.add("auto");
+    }
   };
   if (r.kind === "fuel") {
     selectChip(form, "[data-grade]", "fuel_grade", r.fuel_grade || "92");
@@ -731,6 +741,7 @@ function recompute(form, v, st) {
     syncLevel(i);
   });
   for (const n of Object.values(EST_NAME)) st.est.delete(n);
+  for (const n of st.estSticky) st.est.add(n);
   const markEst = (name) => EST_NAME[name] && st.est.add(EST_NAME[name]);
 
   const q = kind === "fuel" ? "fuel_liters" : "charge_kwh";
@@ -841,6 +852,14 @@ function updateOdoDelta(form, st) {
   }
   const delta = trip ? raw : raw - last;
   const total = trip ? last + raw : raw;
+  // 时间早于最新那条记录：是在补录历史，里程比最新的小是正常的，不标红
+  const lastTs = st.prefill?.last_odo_ts;
+  const backfill = !trip && lastTs && form.occurred_at.value && form.occurred_at.value < lastTs;
+  if (backfill) {
+    el.textContent = delta <= 0 ? `补录：比 ${fmtDate(lastTs)} 的最新里程少 ${km(-delta)} km` : `补录的里程比之后 ${fmtDate(lastTs)} 的还大`;
+    if (delta > 0) el.classList.add("warn-c");
+    return;
+  }
   el.textContent = trip ? `总里程 ${km(total)}` : `本次 ${delta >= 0 ? "+" : ""}${km(delta)} km`;
   if (delta < 0 || delta > 2000) el.classList.add("warn-c");
 }
@@ -866,7 +885,7 @@ function collect(form, v, st, { startOnly = false } = {}) {
     occurred_at: form.occurred_at.value || localISO(),
     odometer_km: odo,
     odometer_estimated: odo == null,
-    source: parseLocal(form.occurred_at.value) < new Date(Date.now() - 7 * 86400000) ? "backfill" : "manual",
+    source: st.record?.source || (parseLocal(form.occurred_at.value) < new Date(Date.now() - 7 * 86400000) ? "backfill" : "manual"),
     note: form.note.value.trim(),
     missed_before: !!form.missed_before?.checked,
     payer_user_id: form.payer_user_id ? +form.payer_user_id.value : null,
@@ -905,13 +924,14 @@ function collect(form, v, st, { startOnly = false } = {}) {
   }
   if (kind === "snapshot") b.snapshot_tag = form.dataset.snapshot_tag || "other";
   if (odo == null) est.add("odometer_km");
+  else est.delete("odometer_km");
   b.estimated_fields = [...est];
   return b;
 }
 
 function validate(form, b, st) {
   if (b.odometer_km == null && !form.odo_unknown?.checked) return "请填写里程，或勾选「不确定里程」";
-  if (b.kind === "snapshot" && b.soc_before_pct == null && b.fuel_level_before_pct == null) return "快照至少要填电量或油量";
+  if (b.kind === "snapshot" && b.odometer_km == null && b.soc_before_pct == null && b.fuel_level_before_pct == null) return "快照至少要填里程、电量或油量中的一项";
   if (b.kind === "fuel" && b.status === "done" && b.fuel_liters == null && b.amount_cents == null) return "请至少填写加油量或金额";
   for (const n of ["soc_before_pct", "soc_after_pct", "fuel_level_before_pct", "fuel_level_after_pct"]) {
     if (b[n] != null && (b[n] < 0 || b[n] > 100)) return "电量和油量要在 0–100% 之间";

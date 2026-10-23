@@ -42,8 +42,7 @@ export function wizardPage() {
       factory_fuel_l: 5, record_style: "detailed", delivery_date: null },
     start: { mode: "existing" },
     summary: {},
-    reminders: { insurance: true, inspection: true, maintenance: true },
-    remDates: {},
+    reminders: {},
   };
   const steps = ["基本信息", "能源参数", "怎么开始记", "提醒"];
   const draw = () => {
@@ -171,16 +170,48 @@ function step3(st) {
       </details>` : ""}`;
 }
 
+// 提醒模板：周期只是常见值，界面上可改；到期日和到期里程必须用户自己填
+const WIZ_REMINDERS = [
+  { key: "insurance", title: "保险到期", months: 12, hint: "看保单上的保险止期" },
+  { key: "inspection", title: "年检", months: 24, hint: "看行驶证副页或检验标志；6 年内新车一般 2 年申领一次，以当地规定为准" },
+  { key: "maintenance", title: "保养", months: 12, km: 10000, iceKm: 7500, useKm: true, hint: "看上次保养单或保养手册上的「下次保养」" },
+  { key: "tires", title: "轮胎检查/更换", months: 60, km: 50000, useKm: true },
+  { key: "brake_fluid", title: "更换刹车油", months: 24 },
+  { key: "cabin_filter", title: "更换空调滤芯", months: 12, km: 20000, useKm: true },
+  { key: "battery_12v", title: "12V 小电瓶检查", months: 36 },
+  { key: "license", title: "驾驶证换证（个人）", hint: "看驾驶证上的有效期" },
+];
+
 function step4(st) {
-  const items = [["insurance", "保险到期", "date"], ["inspection", "年检", "date"], ["maintenance", "保养", "km"], ["tires", "轮胎检查/更换", "km"], ["brake_fluid", "更换刹车油", ""], ["cabin_filter", "更换空调滤芯", ""], ["battery_12v", "12V 小电瓶检查", ""], ["license", "驾驶证换证（个人）", "date"]];
-  return html`<p class="muted small">勾选需要的提醒，到期前会在首页和铃铛里提示；规则以后都能改。</p>
-    <div class="rem-pick">${items.map(([k, l, need]) => html`<label class="rem-pick-row">
-      <input type="checkbox" data-rk="${k}" ${st.reminders[k] ? "checked" : ""}><span class="grow"><b>${l}</b></span>
-      ${need === "date" ? html`<input class="input" type="date" data-rd="${k}" value="${st.remDates[k] || ""}" placeholder="到期日">` : need === "km" ? html`<span class="tiny muted">按里程自动算</span>` : html`<span class="tiny muted">按周期</span>`}
-    </label>`)}</div>`;
+  const ice = ["ice", "hev"].includes(st.v.energy_type);
+  return html`<p class="muted small">勾选需要的提醒，填上下次到期的日期或里程（填一个就行，都填时哪个先到算哪个）。周期是常见值，请按你的保养手册改，留空就是一次性提醒。以后在「提醒」页随时可以改。</p>
+    <div class="rem-pick">${WIZ_REMINDERS.map((t) => {
+      const r = st.reminders[t.key] || {};
+      const km = r.km ?? (t.useKm ? (ice && t.iceKm ? t.iceKm : t.km) : null);
+      const months = r.months ?? t.months ?? null;
+      return html`<div class="rem-pick-item ${r.on ? "on" : ""}" data-rk="${t.key}">
+        <label class="rem-pick-row"><input type="checkbox" data-on ${r.on ? "checked" : ""}><span class="grow"><b>${t.title}</b></span></label>
+        <div class="rem-pick-body ${r.on ? "" : "hidden"}">
+          ${t.hint ? html`<p class="tiny muted">${t.hint}</p>` : ""}
+          <div class="grid-2"><div class="field"><label>下次到期日期</label><input class="input" type="date" data-f="due_date" value="${r.due_date || ""}"></div>
+            ${t.useKm ? html`<div class="field"><label>下次到期里程</label><div class="input-wrap"><input class="input num" data-f="due_odo" inputmode="numeric" value="${r.due_odo ?? ""}" placeholder="${st.start.current_odo != null ? "当前 " + km_(st.start.current_odo) : ""}"><span class="unit">km</span></div></div>` : ""}</div>
+          ${t.key !== "license" ? html`<div class="grid-2"><div class="field"><label>周期（月）</label><div class="input-wrap"><input class="input num" data-f="months" inputmode="numeric" value="${months ?? ""}" placeholder="一次性"><span class="unit">月</span></div></div>
+            ${t.useKm ? html`<div class="field"><label>周期（里程）</label><div class="input-wrap"><input class="input num" data-f="km" inputmode="numeric" value="${km ?? ""}" placeholder="不按里程"><span class="unit">km</span></div></div>` : ""}</div>
+          <p class="tiny muted">周期以保养手册为准，完成后会按实际完成的日期和里程顺延。</p>` : ""}
+        </div></div>`;
+    })}</div>`;
 }
 
+const km_ = (x) => Math.round(x).toLocaleString("zh-CN");
+
 function wireStep(f, st, draw) {
+  f.addEventListener("change", (e) => {
+    const cb = e.target.closest("[data-on]");
+    if (!cb) return;
+    const box = cb.closest("[data-rk]");
+    box.classList.toggle("on", cb.checked);
+    box.querySelector(".rem-pick-body").classList.toggle("hidden", !cb.checked);
+  });
   f.addEventListener("click", (e) => {
     const t = e.target.closest("[data-type],[data-color],[data-mode]");
     if (!t) return;
@@ -240,8 +271,16 @@ function read(f, st) {
     }
   }
   if (st.step === 4) {
-    $$("[data-rk]", f).forEach((c) => (st.reminders[c.dataset.rk] = c.checked));
-    $$("[data-rd]", f).forEach((d) => (st.remDates[d.dataset.rd] = d.value || null));
+    $$("[data-rk]", f).forEach((box) => {
+      const g2 = (n) => box.querySelector(`[data-f="${n}"]`);
+      st.reminders[box.dataset.rk] = {
+        on: box.querySelector("[data-on]").checked,
+        due_date: g2("due_date")?.value || null,
+        due_odo: g2("due_odo") ? toNum(g2("due_odo").value) : null,
+        months: g2("months") ? toNum(g2("months").value) : null,
+        km: g2("km") ? toNum(g2("km").value) : null,
+      };
+    });
   }
 }
 
@@ -261,6 +300,12 @@ function validateStep(st) {
       if (s.delivery_fill_l && !hasDelivery) return "填「提车时加了多少油」需要同时填提车日期和提车里程";
       const sumData = ["s_fuel_yuan", "s_fuel_l", "s_elec_kwh", "s_elec_yuan"].some((k) => st.summary[k] != null);
       if (sumData && !st.summary.s_start && !st.v.delivery_date) return "历史汇总需要填「从哪天开始算」";
+    }
+  }
+  if (st.step === 4) {
+    for (const t of WIZ_REMINDERS) {
+      const r = st.reminders[t.key];
+      if (r?.on && !r.due_date && r.due_odo == null) return `「${t.title}」请填下次到期的日期或里程，不需要就取消勾选`;
     }
   }
   return "";
@@ -290,8 +335,10 @@ function buildPayload(st) {
       elec_kwh: sm.s_elec_kwh ?? null, elec_cents: sm.s_elec_yuan != null ? Math.round(sm.s_elec_yuan * 100) : null, elec_price: sm.s_elec_price ?? null,
     };
   }
-  for (const [k, on] of Object.entries(st.reminders)) {
-    if (on) body.reminders.push({ template_key: k, due_date: st.remDates[k] || null });
+  for (const [k, r] of Object.entries(st.reminders)) {
+    if (r.on && (r.due_date || r.due_odo != null)) {
+      body.reminders.push({ template_key: k, due_date: r.due_date, due_odometer_km: r.due_odo, interval_months: r.months, interval_km: r.km });
+    }
   }
   return body;
 }
@@ -656,8 +703,13 @@ function editVehicle(v) {
           ${v.has_fuel ? html`<div class="field"><label>油表显示方式</label><select class="input" name="fuel_gauge_mode">${[["pct", "百分比"], ["bars", "格数"], ["liters", "升"]].map(([k, l]) => html`<option value="${k}" ${v.fuel_gauge_mode === k ? "selected" : ""}>${l}</option>`)}</select></div>
             <div class="field"><label>油表总格数</label><input class="input num" name="fuel_gauge_bars" inputmode="numeric" value="${v.fuel_gauge_bars ?? ""}" placeholder="格数显示时填"></div>` : ""}
           <div class="field"><label>记录习惯</label><select class="input" name="record_style"><option value="detailed" ${v.record_style === "detailed" ? "selected" : ""}>精细</option><option value="simple" ${v.record_style === "simple" ? "selected" : ""}>简单</option></select></div>
-          <div class="field"><label>初始里程</label><div class="input-wrap"><input class="input num" name="initial_odometer_km" inputmode="numeric" value="${v.initial_odometer_km ?? ""}"><span class="unit">km</span></div></div>
+
         </div>
+        <details class="more"><summary>${raw(icon("down", 16))}提车信息（可选）</summary><div class="stack">
+          <p class="tiny muted">提车日期和提车里程都填了，才能算「提车至今」。中途开始记、记不清可以一直不填；以后想起来了也可以在这里补。</p>
+          <div class="grid-2"><div class="field"><label>提车日期</label><input class="input" type="date" name="delivery_date" value="${v.delivery_date || ""}" max="${todayISO()}"></div>
+            <div class="field"><label>提车里程</label><div class="input-wrap"><input class="input num" name="delivery_odo" inputmode="numeric" value="${v.delivery_date && v.initial_odometer_km != null ? v.initial_odometer_km : ""}" placeholder="新车一般 0–50"><span class="unit">km</span></div></div></div>
+        </div></details>
         <details class="more"><summary>${raw(icon("down", 16))}计算设置</summary><div class="stack">
           <div class="grid-2"><div class="field"><label>最小段里程</label><div class="input-wrap"><input class="input num" name="min_segment_km" value="${c.min_segment_km ?? 30}"><span class="unit">km</span></div><span class="hint">短于这个里程的段合并到下一段</span></div>
             <div class="field"><label>电能折算系数</label><div class="input-wrap"><input class="input num" name="kwh_per_l" value="${c.kwh_per_l ?? 8.9}"><span class="unit">kWh/L</span></div><span class="hint">算等效油耗用</span></div></div>
@@ -682,14 +734,22 @@ function editVehicle(v) {
           charge_limit_pct: n("charge_limit_pct", v.charge_limit_pct), default_fuel_grade: f.default_fuel_grade?.value || v.default_fuel_grade,
           default_charge_type: f.default_charge_type?.value || v.default_charge_type, fuel_gauge_mode: f.fuel_gauge_mode?.value || v.fuel_gauge_mode,
           fuel_gauge_bars: n("fuel_gauge_bars"), factory_fuel_l: v.factory_fuel_l, record_style: f.record_style.value,
-          initial_odometer_km: n("initial_odometer_km"), delivery_date: v.delivery_date, purchase_price_cents: v.purchase_price_cents, color,
+          initial_odometer_km: v.initial_odometer_km, delivery_date: v.delivery_date, purchase_price_cents: v.purchase_price_cents, color,
           calc_settings: { min_segment_km: n("min_segment_km", 30), kwh_per_l: n("kwh_per_l", 8.9), gauge_err_pct: n("gauge_err_pct", 5),
             allow_gauge_anchor: f.allow_gauge_anchor ? f.allow_gauge_anchor.checked : true },
         };
         if (!payload.name) return ($(".form-error", body).textContent = "请填写车名");
         setLoading(e.currentTarget, true);
         try {
+          // 提车信息走专门接口：会同时改提车快照和提车当天的加油，没有提车快照时新建
+          const dDate = f.delivery_date.value || null;
+          const dOdo = toNum(f.delivery_odo.value);
+          const deliveryChanged = dDate && dOdo != null && (dDate !== v.delivery_date || dOdo !== v.initial_odometer_km);
+          if ((dDate && dOdo == null) || (!dDate && dOdo != null)) {
+            throw new Error("提车日期和提车里程要一起填，不填就都留空");
+          }
           await api(`/api/vehicles/${v.id}`, { method: "PUT", body: payload });
+          if (deliveryChanged) await api(`/api/vehicles/${v.id}/delivery`, { method: "POST", body: { odometer_km: dOdo, delivery_date: dDate } });
           await loadVehicles();
           refreshChrome();
           ctx.close();

@@ -721,11 +721,17 @@
   height: 20px;
   accent-color: var(--brand);
 }
-.rem-pick-row .input {
-  width: 160px;
-  min-height: 40px;
-  padding: 6px 10px;
-  font-size: 14px;
+.rem-pick-item {
+  border-bottom: 1px solid var(--line);
+}
+.rem-pick-item .rem-pick-row {
+  border-bottom: 0;
+}
+.rem-pick-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 0 14px 32px;
 }
 
 /* ---------- 我的 ---------- */

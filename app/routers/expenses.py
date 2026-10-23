@@ -313,9 +313,12 @@ def complete_reminder(rid: int, body: CompleteIn, user: User = Depends(get_curre
     if not r:
         raise HTTPException(404, "提醒不存在")
     _reminder_access(db, user, r, "editor")
-    r.last_done_at, r.last_done_odometer_km = body.done_at, body.odometer_km
-    nd, no = next_due(ReminderIn(interval_months=r.interval_months, interval_km=r.interval_km), body.done_at,
-                      body.odometer_km)
+    done_odo = body.odometer_km
+    if done_odo is None and r.interval_km and r.vehicle_id:
+        # 没填完成时的里程：用车辆最新里程顺延，否则按里程的周期会丢失
+        done_odo = _vehicle_context(db, db.get(Vehicle, r.vehicle_id))[0]
+    r.last_done_at, r.last_done_odometer_km = body.done_at, done_odo
+    nd, no = next_due(ReminderIn(interval_months=r.interval_months, interval_km=r.interval_km), body.done_at, done_odo)
     if nd is None and no is None:
         r.is_active = False
     else:

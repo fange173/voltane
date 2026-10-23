@@ -107,7 +107,9 @@ def test_wizard_existing_vehicle_example_c(make_user):
             "start": {"mode": "existing", "delivery_odo": 12, "delivery_fill_l": 30, "delivery_fill_cents": 22500,
                       "current_odo": 9800, "current_fuel_pct": 40, "current_soc": 60},
             "summary": {"fuel_cents": 30000, "fuel_price": 7.6, "elec_kwh": 1250, "elec_cents": 45500},
-            "reminders": [{"template_key": "insurance", "due_date": "2027-04-19"}, {"template_key": "maintenance"}]}
+            "reminders": [{"template_key": "insurance", "due_date": "2027-04-19", "interval_months": 12},
+                          {"template_key": "maintenance"},
+                          {"template_key": "tires", "due_odometer_km": 40000, "interval_km": 45000}]}
     r = c.post("/api/vehicles", json=body)
     assert r.status_code == 200, r.text
     c.vid = r.json()["id"]
@@ -116,8 +118,10 @@ def test_wizard_existing_vehicle_example_c(make_user):
     assert abs(ov["history"]["fuel"]["per100"] - 0.56) < 0.02
     assert ov["latest"]["elec"]["quality"] == "C"
     rems = c.get(f"/api/reminders?vehicle_id={c.vid}").json()
-    maint = next(x for x in rems if x["template_key"] == "maintenance")
-    assert maint["due_odometer_km"] == 19800
+    # 没填到期日期和里程的不建；填了的完全按用户给的值，不套模板默认周期
+    assert not any(x["template_key"] == "maintenance" for x in rems)
+    tires = next(x for x in rems if x["template_key"] == "tires")
+    assert tires["due_odometer_km"] == 40000 and tires["interval_km"] == 45000 and tires["interval_months"] is None
     h = c.get(f"/api/vehicles/{c.vid}/health").json()
     assert any(i["key"] == "no_full" for i in h["issues"])
 
@@ -291,3 +295,57 @@ def test_health_flags_odometer_order_conflict(vehicle):
     rec(vehicle, occurred_at="2026-09-05T08:00", odometer_km=4000, fuel_liters=10, paid_cents=7600)
     h = vehicle.get(f"/api/vehicles/{vehicle.vid}/health").json()
     assert any(i["key"] == "odo_order" for i in h["issues"])
+
+
+def test_edit_delivery_snapshot_keeps_estimated_values(make_user):
+    """编辑向导建的提车快照（油量是估算值）能保存，估算标记保留。"""
+    c = make_user()
+    r = _wizard(c, {"mode": "existing", "delivery_odo": 12, "current_odo": 9800}, delivery_date="2026-04-20")
+    c.vid = r.json()["id"]
+    snap = next(x for x in c.get(f"/api/records?vehicle_id={c.vid}").json()["items"] if x["snapshot_tag"] == "delivery")
+    body = {"vehicle_id": c.vid, "kind": "snapshot", "occurred_at": snap["occurred_at"], "odometer_km": 15,
+            "fuel_level_before_pct": snap["fuel_level_before_pct"], "snapshot_tag": "delivery",
+            "estimated_fields": snap["estimated_fields"], "source": snap["source"], "version": snap["version"]}
+    saved = c.put(f"/api/records/{snap['id']}", json=body).json()["record"]
+    assert saved["odometer_km"] == 15 and saved["estimated_fields"] == ["fuel_before_pct"]
+
+
+def test_add_delivery_later_for_midlife_vehicle(make_user):
+    """中途接入时没填提车信息，之后在车辆参数里补录。"""
+    c = make_user()
+    c.vid = _wizard(c, {"mode": "existing", "current_odo": 23000}).json()["id"]
+    assert c.post(f"/api/vehicles/{c.vid}/delivery", json={"odometer_km": 30000, "delivery_date": "2025-01-01"}).status_code == 400
+    r = c.post(f"/api/vehicles/{c.vid}/delivery", json={"odometer_km": 20, "delivery_date": "2025-01-01"}).json()
+    assert r["created"] is True
+    v = c.get(f"/api/vehicles/{c.vid}").json()
+    assert v["initial_odometer_km"] == 20 and v["delivery_date"] == "2025-01-01"
+    ov = c.get(f"/api/stats/overview?vehicle_id={c.vid}").json()
+    assert ov["history"]["scope"] == "delivery"
+
+
+def test_new_car_mode_creates_delivery_anchor(make_user):
+    c = make_user()
+    r = _wizard(c, {"mode": "new", "current_odo": 15, "current_soc": 90})
+    c.vid = r.json()["id"]
+    items = c.get(f"/api/records?vehicle_id={c.vid}").json()["items"]
+    assert [x["snapshot_tag"] for x in items] == ["delivery"]
+    v = c.get(f"/api/vehicles/{c.vid}").json()
+    assert v["initial_odometer_km"] == 15 and v["delivery_date"]
+
+
+def test_complete_km_reminder_without_odometer_uses_latest(vehicle):
+    rec(vehicle, odometer_km=12345, fuel_liters=10, paid_cents=7500)
+    rid = vehicle.post("/api/reminders", json={"vehicle_id": vehicle.vid, "title": "保养", "due_odometer_km": 12000,
+                                               "interval_km": 8000}).json()["id"]
+    done = vehicle.post(f"/api/reminders/{rid}/complete", json={"done_at": "2026-10-01"}).json()
+    assert done["due_odometer_km"] == 12345 + 8000
+
+
+def test_deleting_delivery_snapshot_clears_initial_odometer(make_user):
+    c = make_user()
+    c.vid = _wizard(c, {"mode": "existing", "delivery_odo": 12, "current_odo": 9800}, delivery_date="2026-04-20").json()["id"]
+    snap = next(x for x in c.get(f"/api/records?vehicle_id={c.vid}").json()["items"] if x["snapshot_tag"] == "delivery")
+    c.delete(f"/api/records/{snap['id']}")
+    assert c.get(f"/api/vehicles/{c.vid}").json()["initial_odometer_km"] is None
+    c.post(f"/api/records/{snap['id']}/restore")
+    assert c.get(f"/api/vehicles/{c.vid}").json()["initial_odometer_km"] == 12

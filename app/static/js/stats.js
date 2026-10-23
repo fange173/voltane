@@ -3,7 +3,7 @@ import { barChart, donut, lineChart } from "./charts.js";
 import { CATEGORY_ICON, icon } from "./icons.js";
 import { navigate } from "./router.js";
 import { listen, resetView, setNav, setTitle, view } from "./shell.js";
-import { CHARGE_LABEL, EXPENSE_LABEL, SEGMENT_TAGS, currentVehicle, gradeLabel, pref, savePref, state } from "./state.js";
+import { CHARGE_LABEL, EXPENSE_LABEL, SEGMENT_TAGS, currentVehicle, gradeLabel, payerEnabled, pref, savePref, state } from "./state.js";
 import { bindRows, itemRow, openDetail } from "./records.js";
 import { bindSegmented, changeTag, emptyState, qTag, skeleton } from "./ui.js";
 import { $, $$, api, esc, fixed, fmtDate, html, km, money, num, raw, todayISO } from "./util.js";
@@ -188,7 +188,7 @@ async function costTab(body, v) {
     ${d.places?.length ? html`<div class="section-title"><span>常去的地点</span></div><div class="card flush list">${d.places.slice(0, 8).map((p) => html`<div class="list-item">
       <span class="ico sm ${p.kind === "fuel" ? "fuel" : "elec"}">${raw(icon(p.kind === "fuel" ? "fuel" : "bolt", 16))}</span><span class="grow">${p.name}<div class="tiny muted">${p.count} 次 · ${money(p.cents, { digits: 0 })}</div></span>
       <span class="num">${p.avg_price != null ? "¥" + fixed(p.avg_price, p.kind === "fuel" ? 2 : 3) : "–"}<small class="muted">/${p.kind === "fuel" ? "L" : "度"}</small></span></div>`)}</div>` : ""}
-    ${d.payers?.length > 1 ? html`<div class="section-title"><span>谁付的</span></div><div class="card flush list">${d.payers.map((p) => html`<div class="list-item"><span class="grow">${p.user?.name || "未知"}</span><b class="num">${money(p.cents)}</b></div>`)}</div>` : ""}`);
+    ${payerEnabled() && d.payers?.length > 1 ? html`<div class="section-title"><span>谁付的</span></div><div class="card flush list">${d.payers.map((p) => html`<div class="list-item"><span class="grow">${p.user?.name || "未知"}</span><b class="num">${money(p.cents)}</b></div>`)}</div>` : ""}`);
   bindSegmented($("#c-range", body), (k) => {
     savePref("cost_range", k);
     costTab(body, v);

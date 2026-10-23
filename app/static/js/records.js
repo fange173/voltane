@@ -13,6 +13,7 @@ import {
   emit,
   fuelLevelText,
   gradeLabel,
+  payerEnabled,
   state,
 } from "./state.js";
 import { avatar, confirmDialog, emptyState, qTag, sheet, skeleton, toast, toastError } from "./ui.js";
@@ -288,7 +289,7 @@ function detailHtml(d, v) {
     add("地点", d.place_name);
     if (d.missed_before) add("漏记", "上次补能没记");
   }
-  add("付款人", d.payer?.name);
+  if (payerEnabled()) add("付款人", d.payer?.name);
   add("备注", d.note);
   const who = d.created_by ? html`${avatar(d.created_by, "sm")} ${d.created_by.name} 记录${d.updated_by && d.updated_by.id !== d.created_by.id ? html` · ${d.updated_by.name} 修改过` : ""}` : "";
   return html`

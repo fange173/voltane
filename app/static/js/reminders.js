@@ -211,15 +211,14 @@ function editReminder(r, tpl = null) {
           <div class="field"><label>每隔多少公里</label><div class="input-wrap"><input class="input num" name="interval_km" inputmode="numeric" value="${base.interval_km ?? ""}" placeholder="可不填"><span class="unit">km</span></div></div></div>
         <div class="grid-2"><div class="field"><label>提前几天提醒</label><div class="input-wrap"><input class="input num" name="lead_days" inputmode="numeric" value="${base.lead_days}"><span class="unit">天</span></div></div>
           <div class="field"><label>提前多少公里</label><div class="input-wrap"><input class="input num" name="lead_km" inputmode="numeric" value="${base.lead_km}"><span class="unit">km</span></div></div></div>
-        <p class="tiny muted">日期和里程都填时，哪个先到算哪个；按里程的提醒会用最近的日均里程估算到期日。</p>
+        <p class="tiny muted">日期和里程都填时，哪个先到算哪个；按里程的提醒会用最近的日均里程估算到期日。周期是常见值，请按保养手册修改。</p>
         ${isNew && v ? switchRow("personal", "只提醒我自己（不属于这辆车）", base.personal, "如驾驶证换证") : ""}
         ${!isNew ? switchRow("is_active", "启用", base.is_active) : ""}
         <div class="field"><label>备注</label><input class="input" name="note" value="${base.note || ""}" maxlength="200"></div>
         <div class="form-error"></div></form>`);
-      if (isNew && !base.due_odometer_km && base.interval_km) {
-        const o = state.vehicles.find((x) => x.id === v?.id)?.latest_odo;
-        if (o) $("[name=due_odometer_km]", body).value = Math.round(o + base.interval_km);
-      }
+      // 到期里程不替用户猜，只提示当前里程
+      const curOdo = state.vehicles.find((x) => x.id === (r ? r.vehicle_id : v?.id))?.latest_odo;
+      if (curOdo) $("[name=due_odometer_km]", body).placeholder = `当前 ${km(curOdo)}`;
       ctx.setFoot(`<button class="btn btn-primary grow" data-ok>${icon("check", 18)}保存</button>`);
       $("[data-ok]", ctx.foot).onclick = async (e) => {
         const f = $("form", body);
