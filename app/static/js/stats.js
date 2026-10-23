@@ -95,7 +95,11 @@ async function energyTab(body, v) {
     const colors = ["elec", "brand", "fuel", "expense", "snapshot"];
     donut($("#c-ctype", body), { items: types.map((t, i) => ({ label: CHARGE_LABEL[t.type], value: t.kwh, color: colors[i % colors.length] })), size: 140, thickness: 18,
       center: `<b class="num">${num(types.reduce((a, t) => a + t.kwh, 0), 0)}</b><small>kWh</small>` });
-    barChart($("#c-soc", body), { labels: d.charging.soc_start.map((_, i) => `${i * 10}`), series: [{ name: "次数", color: "elec", values: d.charging.soc_start }], height: 140, fmt: (x) => Math.round(x) });
+    if (d.charging.soc_start.some((x) => x > 0)) {
+      barChart($("#c-soc", body), { labels: d.charging.soc_start.map((_, i) => `${i * 10}`), series: [{ name: "次数", color: "elec", values: d.charging.soc_start }], height: 140, fmt: (x) => Math.round(x) });
+    } else {
+      $("#c-soc", body).innerHTML = `<div class="chart-empty">充电时填上开始电量，这里会显示你习惯在多少电量时充电</div>`;
+    }
   }
   body.querySelectorAll(".seg-row").forEach((b) => b.addEventListener("click", () => openDetail("record", +b.dataset.end)));
 }
@@ -130,7 +134,7 @@ function chargingBlock(c) {
 
 function segList(v, d) {
   const all = [...(d.segments.fuel || []), ...(d.segments.elec || [])].sort((a, b) => (a.end_ts < b.end_ts ? 1 : -1)).slice(0, 40);
-  if (!all.length) return String(emptyState({ ico: "chart", title: "还没有能耗段", text: "两次「加满」之间、或两条带电量的记录之间就是一段" }));
+  if (!all.length) return emptyState({ ico: "chart", title: "还没有能耗段", text: "两次「加满」之间、或两条带电量的记录之间就是一段" });
   return all.map((s) => {
     const unit = s.energy === "fuel" ? "L" : "kWh";
     const val = s.status !== "ok" ? html`<span class="badge warn">${{ missed: "漏记", negative: "异常", incomplete: "含汇总", uncertain: "误差大" }[s.status] || "–"}</span>`
@@ -141,11 +145,11 @@ function segList(v, d) {
     if (s.tag !== "normal") tags.push(html`<span class="badge brand">${SEGMENT_TAGS[s.tag]}</span>`);
     if (s.excluded) tags.push(html`<span class="badge">已排除</span>`);
     if (s.anomaly) tags.push(html`<span class="badge warn">${{ high: "偏高", low: "偏低", parked: "停放" }[s.anomaly]}</span>`);
-    return String(html`<button class="list-item seg-row" data-end="${s.end_id}">
+    return html`<button class="list-item seg-row" data-end="${s.end_id}">
       <span class="ico sm ${s.energy === "fuel" ? "fuel" : "elec"}">${raw(icon(s.energy === "fuel" ? "fuel" : "bolt", 16))}</span>
       <span class="grow"><span class="rec-title">${fmtDate(s.start_ts)} → ${fmtDate(s.end_ts)} ${tags}</span><span class="rec-sub">${km(s.distance)} km · ${num(s.days, 1)} 天${s.quality !== "A" ? " · 估算" : ""}</span></span>
-      <span class="rec-right">${val}</span></button>`);
-  }).join("");
+      <span class="rec-right">${val}</span></button>`;
+  });
 }
 
 /* ---------- 花费 ---------- */
