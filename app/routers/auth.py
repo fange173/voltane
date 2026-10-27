@@ -26,7 +26,8 @@ from app.auth import (
     token_body,
     user_to_dict,
 )
-from app.database import Invite, User, VehicleMember, get_db, get_setting, hash_password, utcnow, verify_password
+from app.database import (Invite, User, VehicleMember, get_db, get_setting, hash_password, invite_usable, utcnow,
+                          verify_password)
 from app.services import log_activity
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -157,7 +158,7 @@ def signup(body: SignupIn, response: Response, db: Session = Depends(get_db)):
     if get_setting(db, "allow_signup", "false") != "true":
         raise HTTPException(403, "管理员没有开放邀请注册")
     inv = db.scalar(select(Invite).where(Invite.code == body.code.upper()))
-    if not inv or not inv.allow_signup or inv.revoked_at or inv.expires_at < utcnow() or inv.used_count >= inv.max_uses:
+    if not invite_usable(inv) or not inv.allow_signup:
         raise HTTPException(400, "邀请码无效或已过期")
     name = body.username.strip()
     if not USERNAME_RE.match(name):
@@ -170,6 +171,7 @@ def signup(body: SignupIn, response: Response, db: Session = Depends(get_db)):
     db.flush()
     db.add(VehicleMember(vehicle_id=inv.vehicle_id, user_id=user.id, role=inv.role))
     inv.used_count += 1
+    inv.last_used_at = utcnow()
     log_activity(db, inv.vehicle_id, user, "join", "member", user.id, f"{user.name} 通过邀请加入")
     db.commit()
     token, max_age = create_token(user, True)

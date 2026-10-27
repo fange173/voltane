@@ -629,14 +629,16 @@ class MarkIn(BaseModel):
 
 @router.patch("/segments")
 def mark_segment(body: MarkIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """综合段与同区间的油段一一对应，标记综合段时油段一起标。"""
     v, _ = require_vehicle(db, user, body.vehicle_id, "editor")
-    m = db.get(SegmentMark, (v.id, body.end_record_id, body.energy))
-    if body.tag == "normal" and not body.excluded:
-        if m:
-            db.delete(m)
-    else:
+    for energy in [body.energy] + (["fuel"] if body.energy == "combined" else []):
+        m = db.get(SegmentMark, (v.id, body.end_record_id, energy))
+        if body.tag == "normal" and not body.excluded:
+            if m:
+                db.delete(m)
+            continue
         if not m:
-            m = SegmentMark(vehicle_id=v.id, end_record_id=body.end_record_id, energy=body.energy)
+            m = SegmentMark(vehicle_id=v.id, end_record_id=body.end_record_id, energy=energy)
             db.add(m)
         m.tag, m.excluded, m.note, m.updated_by = body.tag, body.excluded, body.note, user.id
     bump(v)

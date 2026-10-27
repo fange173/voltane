@@ -36,6 +36,18 @@ def test_record_flow_and_segment_preview(vehicle):
     assert lst["items"][0]["created_by"]["username"] == vehicle.username
 
 
+def test_mark_combined_also_marks_fuel(vehicle):
+    rid = seed_a(vehicle).json()["record"]["id"]
+    body = {"vehicle_id": vehicle.vid, "end_record_id": rid, "energy": "combined", "tag": "winter", "excluded": True}
+    assert vehicle.patch("/api/segments", json=body).status_code == 200
+    segs = {s["energy"]: s for s in vehicle.get(f"/api/records/{rid}").json()["segments"]}
+    assert segs["combined"]["tag"] == segs["fuel"]["tag"] == "winter"
+    assert segs["combined"]["excluded"] and segs["fuel"]["excluded"]
+    assert vehicle.patch("/api/segments", json={**body, "tag": "normal", "excluded": False}).status_code == 200
+    segs = {s["energy"]: s for s in vehicle.get(f"/api/records/{rid}").json()["segments"]}
+    assert segs["combined"]["tag"] == segs["fuel"]["tag"] == "normal"
+
+
 def test_bev_cannot_fuel(make_user):
     c = make_user()
     c.vid = c.post("/api/vehicles", json={"name": "Y", "energy_type": "bev"}).json()["id"]
@@ -99,6 +111,47 @@ def test_sharing_permissions(vehicle, make_user):
     assert editor.post(f"/api/vehicles/{vehicle.vid}/members", json={"username": "admin"}).status_code == 403
     acts = vehicle.get(f"/api/vehicles/{vehicle.vid}/activity").json()
     assert any("通过邀请码加入" in a["summary"] for a in acts)
+
+
+def test_long_term_invite(vehicle, make_user):
+    inv = vehicle.post(f"/api/vehicles/{vehicle.vid}/invites",
+                       json={"role": "viewer", "days": None, "max_uses": None}).json()
+    assert inv["expires_at"] is None and inv["max_uses"] is None and inv["last_used_at"] is None
+    for n in ("l1", "l2", "l3"):
+        assert make_user(n).post(f"/api/invites/{inv['code']}/accept").status_code == 200
+    listed = vehicle.get(f"/api/vehicles/{vehicle.vid}/invites").json()
+    row = next(i for i in listed if i["id"] == inv["id"])
+    assert row["used_count"] == 3 and row["last_used_at"]
+    # 作废后不能再用，已加入的成员保留
+    assert vehicle.delete(f"/api/invites/{inv['id']}").status_code == 200
+    assert make_user("l4").post(f"/api/invites/{inv['code']}/accept").status_code == 404
+    assert all(i["id"] != inv["id"] for i in vehicle.get(f"/api/vehicles/{vehicle.vid}/invites").json())
+    assert len(vehicle.get(f"/api/vehicles/{vehicle.vid}/members").json()) == 4
+    # 有期限的照旧
+    timed = vehicle.post(f"/api/vehicles/{vehicle.vid}/invites", json={"days": 30, "max_uses": 5}).json()
+    assert timed["expires_at"] and timed["max_uses"] == 5
+
+
+def test_migrate_v3_rebuilds_invites():
+    from sqlalchemy import create_engine, text
+
+    from app.database import _migrate_v3
+
+    eng = create_engine("sqlite://")
+    with eng.begin() as c:
+        c.execute(text("CREATE TABLE invites (id INTEGER PRIMARY KEY, code VARCHAR(16) NOT NULL UNIQUE, vehicle_id INTEGER, "
+                       "role VARCHAR(8), created_by INTEGER, expires_at DATETIME NOT NULL, max_uses INTEGER NOT NULL, "
+                       "used_count INTEGER, allow_signup BOOLEAN, revoked_at DATETIME, created_at DATETIME)"))
+        c.execute(text("INSERT INTO invites VALUES (1, 'ABCD2345', 1, 'editor', 1, '2026-11-01 00:00:00', 1, 0, 0, NULL, "
+                       "'2026-10-01 00:00:00')"))
+        _migrate_v3(c)
+        _migrate_v3(c)
+        cols = {r[1]: r[3] for r in c.execute(text("PRAGMA table_info(invites)"))}
+        c.execute(text("INSERT INTO invites (code, vehicle_id, role, created_by, used_count, allow_signup, created_at) "
+                       "VALUES ('LONG2345', 1, 'viewer', 1, 0, 0, '2026-10-27 00:00:00')"))
+        rows = c.execute(text("SELECT code, expires_at, max_uses FROM invites ORDER BY id")).all()
+    assert cols["expires_at"] == 0 and cols["max_uses"] == 0 and "last_used_at" in cols
+    assert rows[0][0] == "ABCD2345" and rows[0][2] == 1 and rows[1][1:] == (None, None)
 
 
 def test_wizard_existing_vehicle_example_c(make_user):

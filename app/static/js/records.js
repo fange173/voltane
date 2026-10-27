@@ -42,10 +42,15 @@ export function itemIcon(it) {
 
 function badgeHtml(b) {
   const unit = b.energy === "elec" ? "kWh" : b.energy === "combined" ? "L 折合" : "L";
-  if (b.kind === "idle" && b.per_day != null) return html`<span class="badge ${b.anomaly ? "warn" : ""}">${b.anomaly ? raw("●") : ""}静置 ${num(b.per_day)} kWh/天</span>`;
+  if (b.kind === "idle" && b.per_day != null) return html`<span class="badge ${b.anomaly ? "warn" : ""}" title="静置耗电">${b.anomaly ? raw("●") : ""}${num(b.per_day)} kWh/天</span>`;
   if (b.per100 == null) return "";
   const cls = b.anomaly ? "warn" : b.energy === "fuel" ? "fuel" : "elec";
   return html`<span class="badge ${cls}">${b.anomaly ? raw("●") : ""}${num(b.per100)} ${unit}${b.quality !== "A" ? "·估" : ""}</span>`;
+}
+
+/** 多人共用的车才显示记录人头像。 */
+function shared(vid) {
+  return (state.vehicles.find((v) => v.id === vid)?.member_count ?? 1) > 1;
 }
 
 export function itemRow(it, { showDate = true } = {}) {
@@ -64,10 +69,10 @@ export function itemRow(it, { showDate = true } = {}) {
   if (it.pending) tags.push(html`<span class="badge warn">待同步</span>`);
   return html`<button class="list-item rec-row ${it.pending ? "pending" : ""}" data-type="${it.type}" data-id="${it.id ?? ""}">
     ${itemIcon(it)}
-    <span class="grow"><span class="rec-title">${itemTitle(it)} ${tags}</span>
+    <span class="grow"><span class="rec-title"><span class="t">${itemTitle(it)}</span> ${tags}</span>
       <span class="rec-sub">${sub.join(" · ")}</span></span>
-    <span class="rec-right">${cents != null ? html`<b class="num">${money(cents)}</b>` : html`<b class="faint">–</b>`}
-      <span class="row" style="gap:4px;justify-content:flex-end">${(it.badges || []).map(badgeHtml)}${avatar(it.created_by, "sm")}</span></span>
+    <span class="rec-right">${cents != null ? html`<b class="num">${money(cents)}</b>` : it.kind === "snapshot" ? "" : html`<b class="faint">–</b>`}
+      <span class="row" style="gap:4px;justify-content:flex-end">${(it.badges || []).map(badgeHtml)}${shared(it.vehicle_id) ? avatar(it.created_by, "sm") : ""}</span></span>
   </button>`;
 }
 
@@ -324,7 +329,7 @@ function segmentCard(s, d, v) {
     const kText = p.k ? html`<span class="faint">（每 1% 电量 ≈ ${fixed(p.k, 3)} kWh）</span>` : "";
     return html`<div><b>${p.energy === "fuel" ? "油" : "电"}</b>：起点 ${p.start}（${fmtVal(p.start_value, p.unit)}）− 终点 ${p.end}（${fmtVal(p.end_value, p.unit)}）+ 期间补能 ${fmtVal(p.added, p.unit)} = <b>${fmtVal(p.amount, p.unit)}</b> ${kText}</div>`;
   });
-  const canMark = !isComb && d.can_edit;
+  const canMark = d.can_edit && s.end_id != null;
   return html`<div class="card seg-card ${s.energy}">
     <div class="row between"><span class="card-title">${title}</span><span class="tiny muted">${fmtDate(s.start_ts)} → ${fmtDate(s.end_ts)} · ${km(s.distance)} km</span></div>
     <div class="row wrap seg-head">${head}${s.anomaly ? html`<span class="badge warn">${{ high: "偏高", low: "偏低", parked: "疑似停放耗电", idle_high: "停车耗电偏高" }[s.anomaly]}</span>` : ""}</div>

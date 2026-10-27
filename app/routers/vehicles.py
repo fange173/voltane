@@ -27,6 +27,7 @@ from app.database import (
     Vehicle,
     VehicleMember,
     get_db,
+    invite_usable,
     localnow,
     utcnow,
 )
@@ -371,26 +372,25 @@ _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 class InviteIn(BaseModel):
+    """days、max_uses 传 null 表示长期有效、不限次数。"""
     role: Literal["owner", "editor", "viewer"] = "editor"
-    days: int = Field(7, ge=1, le=90)
-    max_uses: int = Field(1, ge=1, le=20)
+    days: Optional[int] = Field(7, ge=1, le=365)
+    max_uses: Optional[int] = Field(1, ge=1, le=100)
     allow_signup: bool = False
 
 
 def _invite_dict(inv: Invite) -> dict:
     return {"id": inv.id, "code": inv.code, "role": inv.role, "role_label": ROLE_LABEL[inv.role],
             "expires_at": iso(inv.expires_at), "max_uses": inv.max_uses, "used_count": inv.used_count,
-            "allow_signup": inv.allow_signup}
+            "last_used_at": iso(inv.last_used_at), "allow_signup": inv.allow_signup}
 
 
 @router.get("/vehicles/{vid}/invites")
 def list_invites(vid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     require_vehicle(db, user, vid, "owner")
-    rows = db.scalars(select(Invite).where(
-        Invite.vehicle_id == vid, Invite.revoked_at.is_(None), Invite.expires_at > utcnow(),
-        Invite.used_count < Invite.max_uses,
-    ).order_by(Invite.id.desc()))
-    return [_invite_dict(i) for i in rows]
+    rows = db.scalars(select(Invite).where(Invite.vehicle_id == vid, Invite.revoked_at.is_(None))
+                      .order_by(Invite.id.desc()))
+    return [_invite_dict(i) for i in rows if invite_usable(i)]
 
 
 @router.post("/vehicles/{vid}/invites")
@@ -401,7 +401,7 @@ def create_invite(vid: int, body: InviteIn, user: User = Depends(get_current_use
         if not db.scalar(select(Invite).where(Invite.code == code)):
             break
     inv = Invite(code=code, vehicle_id=vid, role=body.role, created_by=user.id,
-                 expires_at=utcnow() + timedelta(days=body.days), max_uses=body.max_uses,
+                 expires_at=utcnow() + timedelta(days=body.days) if body.days else None, max_uses=body.max_uses,
                  allow_signup=body.allow_signup)
     db.add(inv)
     db.commit()
@@ -421,7 +421,7 @@ def revoke_invite(iid: int, user: User = Depends(get_current_user), db: Session 
 
 def _valid_invite(db: Session, code: str) -> Invite:
     inv = db.scalar(select(Invite).where(Invite.code == code.strip().upper()))
-    if not inv or inv.revoked_at or inv.expires_at < utcnow() or inv.used_count >= inv.max_uses:
+    if not invite_usable(inv):
         raise HTTPException(404, "邀请码无效或已过期")
     return inv
 
@@ -447,6 +447,7 @@ def accept_invite(code: str, user: User = Depends(get_current_user), db: Session
         return {"ok": True, "vehicle_id": inv.vehicle_id, "already": True}
     db.add(VehicleMember(vehicle_id=inv.vehicle_id, user_id=user.id, role=inv.role))
     inv.used_count += 1
+    inv.last_used_at = utcnow()
     log_activity(db, inv.vehicle_id, user, "join", "member", user.id,
                  f"{user.name} 通过邀请码加入（{ROLE_LABEL[inv.role]}）")
     db.commit()

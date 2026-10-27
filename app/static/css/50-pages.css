@@ -73,6 +73,12 @@
   font-weight: 600;
   font-size: 15px;
 }
+.rec-title .t {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .rec-sub {
   display: block;
   font-size: 12px;

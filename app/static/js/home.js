@@ -75,7 +75,7 @@ function render(el, v, d, reload) {
         ${editable ? quickRow(v) : ""}
       </div>
       <div class="home-side stack">
-        ${pendingCard(d.pending)}
+        ${pendingCard(d.pending, editable)}
         ${remindersCard(d.reminders)}
         ${historyCard(v, d.history)}
       </div>
@@ -229,12 +229,12 @@ function heroCard(v, d) {
 
 /* ---------- 待确认 / 提醒 / 提车至今 ---------- */
 
-function pendingCard(items) {
+function pendingCard(items, editable) {
   if (!items?.length) return "";
-  return html`<div class="card pending-card"><div class="card-head"><span class="card-title">${raw(icon("warning", 18))}待确认</span><span class="badge warn">${items.length}</span></div>
+  return html`<div class="card pending-card"><div class="card-head"><span class="card-title">${raw(icon("warning", 18))}待确认</span><span class="badge warn" data-count>${items.length}</span></div>
     ${items.map((it) => html`<div class="pending-item" data-key="${it.key}">
       <span class="grow small">${it.text}</span>
-      <div class="row">${it.type === "anomaly" ? html`<button class="btn btn-sm btn-soft" data-open="${it.end_id}">查看</button>` : html`<button class="btn btn-sm btn-soft" data-fix="${it.key}">补一条</button>`}
+      <div class="row">${it.type === "anomaly" ? html`<button class="btn btn-sm btn-soft" data-open="${it.end_id}">查看</button>` : editable ? html`<button class="btn btn-sm btn-soft" data-fix="${it.key}">补一条</button>` : ""}
       <button class="btn btn-sm btn-ghost" data-dismiss="${it.key}">忽略</button></div></div>`)}</div>`;
 }
 
@@ -247,7 +247,11 @@ function bindPending(el, v, items) {
       if (t.dataset.open) return openDetail("record", +t.dataset.open);
       if (t.dataset.dismiss) {
         await api(`/api/vehicles/${v.id}/hints/dismiss`, { method: "POST", body: { key: t.dataset.dismiss } });
+        const card = t.closest(".pending-card");
         t.closest(".pending-item").remove();
+        const left = card.querySelectorAll(".pending-item").length;
+        if (left) card.querySelector("[data-count]").textContent = left;
+        else card.remove();
         return;
       }
       const it = items.find((x) => x.key === t.dataset.fix);

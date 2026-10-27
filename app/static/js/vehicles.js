@@ -402,7 +402,7 @@ export async function vehiclePage() {
     <div class="card flush list" id="members">${members.map((m) => html`<div class="list-item">${avatar(m, "")}<span class="grow">${m.name}${m.is_me ? html` <span class="badge">我</span>` : ""}<div class="tiny muted">@${m.username} · ${fmtDate(m.joined_at)} 加入</div></span>
       ${owner && !m.is_me ? html`<button class="chip sm" data-role="${m.id}">${m.role_label} ${raw(icon("down", 12))}</button>` : html`<span class="badge">${m.role_label}</span>`}</div>`)}</div>
     ${owner && invites.length ? html`<div class="card flush list" style="margin-top:10px">${invites.map((i) => html`<div class="list-item"><span class="ico sm brand">${raw(icon("key", 16))}</span>
-      <span class="grow"><b class="num code">${i.code}</b><div class="tiny muted">${i.role_label} · ${fmtDate(i.expires_at)} 过期 · 已用 ${i.used_count}/${i.max_uses}${i.allow_signup ? " · 可注册" : ""}</div></span>
+      <span class="grow"><b class="num code">${i.code}</b><div class="tiny muted">${inviteMeta(i)}</div></span>
       <button class="icon-btn" data-copy="${i.code}" aria-label="复制链接">${raw(icon("copy", 18))}</button><button class="icon-btn" data-revoke="${i.id}" aria-label="作废">${raw(icon("trash", 18))}</button></div>`)}</div>` : ""}
 
     <div class="section-title"><span>历史 / 周期汇总</span>${editable ? html`<button class="link-btn" id="s-add">${raw(icon("plus", 14))} 添加</button>` : ""}</div>
@@ -422,7 +422,7 @@ export async function vehiclePage() {
       ${!owner || members.filter((m) => m.role === "owner").length > 1 ? html`<button class="list-item" id="v-leave">${raw(`<span class="ico sm warn">${icon("logout", 16)}</span>`)}<span class="grow">退出这辆车</span></button>` : ""}
       ${owner ? html`<button class="list-item" id="v-delete">${raw(`<span class="ico sm danger">${icon("trash", 16)}</span>`)}<span class="grow danger-c">删除车辆和全部数据</span></button>` : ""}
     </div></div>`);
-  bindVehiclePage($("#vpage", el), v, members, summaries);
+  bindVehiclePage($("#vpage", el), v, members, summaries, invites);
 }
 
 function issueAction(i, editable) {
@@ -432,7 +432,7 @@ function issueAction(i, editable) {
   return map[i.action] ? html`<button class="btn btn-sm btn-soft" data-act="${i.action}" data-key="${i.key}">${map[i.action]}</button>` : "";
 }
 
-function bindVehiclePage(el, v, members, summaries) {
+function bindVehiclePage(el, v, members, summaries, invites) {
   $("#v-edit", el)?.addEventListener("click", () => editVehicle(v));
   $("#m-add", el)?.addEventListener("click", () => inviteSheet(v));
   $("#s-add", el)?.addEventListener("click", () => summarySheet(v));
@@ -446,11 +446,11 @@ function bindVehiclePage(el, v, members, summaries) {
       } else if (t.dataset.act) {
         await issueGo(v, t.dataset.act, t.dataset.key);
       } else if (t.dataset.role) {
-        roleSheet(v, members.find((m) => m.id === +t.dataset.role));
+        roleSheet(v, members.find((m) => m.id === +t.dataset.role), invites.length > 0);
       } else if (t.dataset.copy) {
         copyInvite(t.dataset.copy);
       } else if (t.dataset.revoke) {
-        if (await confirmDialog({ title: "作废邀请码？", message: "作废后这个邀请码不能再使用。", ok: "作废", danger: true })) {
+        if (await confirmDialog({ title: "作废邀请码？", message: "作废后这个邀请码不能再使用，已经通过它加入的成员不受影响。", ok: "作废", danger: true })) {
           await api(`/api/invites/${t.dataset.revoke}`, { method: "DELETE" });
           emit("data-changed");
         }
@@ -547,7 +547,7 @@ function deliverySheet(v, issue) {
   });
 }
 
-function roleSheet(v, m) {
+function roleSheet(v, m, hasInvites) {
   sheet({
     title: m.name,
     render(body, ctx) {
@@ -563,7 +563,7 @@ function roleSheet(v, m) {
             emit("data-changed");
           }
           if (e.target.closest("[data-remove]")) {
-            if (!(await confirmDialog({ title: "移出成员？", message: `移出后 ${esc(m.name)} 将看不到这辆车，已记的记录会保留。`, ok: "移出", danger: true }))) return;
+            if (!(await confirmDialog({ title: "移出成员？", message: `移出后 ${esc(m.name)} 将看不到这辆车，已记的记录会保留。${hasInvites ? "对方如果还拿着有效的邀请码，可以重新加入，需要的话一并作废。" : ""}`, ok: "移出", danger: true }))) return;
             await api(`/api/vehicles/${v.id}/members/${m.id}`, { method: "DELETE" });
             ctx.close();
             emit("data-changed");
@@ -574,6 +574,12 @@ function roleSheet(v, m) {
       });
     },
   });
+}
+
+function inviteMeta(i) {
+  return [i.role_label, i.expires_at ? `${fmtDate(i.expires_at)} 过期` : "长期有效",
+    i.max_uses ? `已用 ${i.used_count}/${i.max_uses}` : `不限次数 · 已加入 ${i.used_count} 人`,
+    i.allow_signup && "可注册"].filter(Boolean).join(" · ");
 }
 
 function copyInvite(code) {
@@ -593,8 +599,9 @@ function inviteSheet(v) {
         <div class="segmented" id="inv-mode"><button data-v="code" class="on">邀请码 / 链接</button><button data-v="user">按用户名添加</button></div>
         <div class="field"><label>角色</label><div class="chips" id="inv-role">${Object.entries(ROLE_LABEL).map(([k, l]) => html`<button class="chip sm ${k === "editor" ? "on" : ""}" data-v="${k}">${l}</button>`)}</div></div>
         <div data-pane="code" class="stack">
-          <div class="grid-2"><div class="field"><label>有效期</label><div class="input-wrap"><input class="input num" name="days" value="7" inputmode="numeric"><span class="unit">天</span></div></div>
-            <div class="field"><label>可用次数</label><div class="input-wrap"><input class="input num" name="uses" value="1" inputmode="numeric"><span class="unit">次</span></div></div></div>
+          <div class="field"><label>有效期</label><div class="segmented" id="inv-days"><button data-v="1">1 天</button><button data-v="7" class="on">7 天</button><button data-v="30">30 天</button><button data-v="">长期</button></div></div>
+          <div class="field"><label>可用次数</label><div class="segmented" id="inv-uses"><button data-v="1" class="on">1 次</button><button data-v="5">5 次</button><button data-v="">不限</button></div></div>
+          <p class="tiny muted hidden" id="inv-long">长期有效的邀请码在你作废前一直可用，不限次数的可以发给多位家人共用；不需要了就在成员列表里作废。</p>
           ${switchRow("signup", "允许对方用链接自己注册账号", false, "需要管理员在后台打开「允许邀请注册」")}
         </div>
         <div data-pane="user" class="hidden"><div class="field"><label>对方的用户名</label><input class="input" name="username" placeholder="账号由管理员创建"></div></div>
@@ -605,6 +612,10 @@ function inviteSheet(v) {
         $$("[data-pane]", body).forEach((p) => p.classList.toggle("hidden", p.dataset.pane !== k));
       });
       bindChips($("#inv-role", body));
+      const pick = { days: "7", uses: "1" };
+      const showLong = () => $("#inv-long", body).classList.toggle("hidden", pick.days !== "" && pick.uses !== "");
+      bindSegmented($("#inv-days", body), (k) => { pick.days = k; showLong(); });
+      bindSegmented($("#inv-uses", body), (k) => { pick.uses = k; showLong(); });
       ctx.setFoot(`<button class="btn btn-primary grow" data-ok>${icon("check", 18)}确定</button>`);
       $("[data-ok]", ctx.foot).onclick = async (e) => {
         const role = $("#inv-role .chip.on", body).dataset.v;
@@ -615,7 +626,7 @@ function inviteSheet(v) {
             toast("已添加成员");
           } else {
             const inv = await api(`/api/vehicles/${v.id}/invites`, { method: "POST", body: {
-              role, days: toNum($("[name=days]", body).value) || 7, max_uses: toNum($("[name=uses]", body).value) || 1,
+              role, days: pick.days ? +pick.days : null, max_uses: pick.uses ? +pick.uses : null,
               allow_signup: $("[name=signup]", body).checked } });
             copyInvite(inv.code);
           }

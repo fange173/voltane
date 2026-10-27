@@ -47,6 +47,7 @@ export function mePage() {
       <button class="list-item" id="me-pwd"><span class="ico sm">${raw(icon("key", 16))}</span><span class="grow">修改密码</span>${raw(icon("right", 16))}</button>
       ${u.is_admin ? html`<a class="list-item" data-link href="/admin"><span class="ico sm brand">${raw(icon("shield", 16))}</span><span class="grow">管理后台</span>${raw(icon("right", 16))}</a>` : ""}
       <button class="list-item" id="me-logout"><span class="ico sm danger">${raw(icon("logout", 16))}</span><span class="grow danger-c">退出登录</span></button>
+      <button class="list-item" id="me-logout-all"><span class="ico sm danger">${raw(icon("logout", 16))}</span><span class="grow danger-c">退出所有设备</span></button>
     </div>
     <p class="end-mark">油电簿 Voltane · 一车两能，一本算清</p>`);
   bindSegmented($("#theme-seg", el), (t) => {
@@ -65,6 +66,15 @@ export function mePage() {
     if (!(await confirmDialog({ title: "退出登录？", ok: "退出" }))) return;
     await api("/api/auth/logout", { method: "POST" });
     location.href = "/";
+  };
+  $("#me-logout-all", el).onclick = async () => {
+    if (!(await confirmDialog({ title: "退出所有设备？", message: "所有设备、浏览器和 App 上的登录都会失效，需要重新登录。", ok: "全部退出", danger: true }))) return;
+    try {
+      await api("/api/auth/logout-all", { method: "POST" });
+      location.href = "/";
+    } catch (ex) {
+      toastError(ex);
+    }
   };
 }
 

@@ -175,12 +175,20 @@ class Invite(Base):
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id", ondelete="CASCADE"))
     role: Mapped[str] = mapped_column(String(8), default="editor")
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    expires_at: Mapped[datetime] = mapped_column(DateTime)
-    max_uses: Mapped[int] = mapped_column(Integer, default=1)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)  # 空 = 长期有效
+    max_uses: Mapped[Optional[int]] = mapped_column(Integer)  # 空 = 不限次数
     used_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     allow_signup: Mapped[bool] = mapped_column(Boolean, default=False)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+def invite_usable(inv: Optional[Invite]) -> bool:
+    """未作废、未过期、次数未用完。"""
+    return inv is not None and inv.revoked_at is None \
+        and (inv.expires_at is None or inv.expires_at > utcnow()) \
+        and (inv.max_uses is None or inv.used_count < inv.max_uses)
 
 
 class Record(Base):
@@ -406,7 +414,19 @@ def _migrate_v2(conn) -> None:
                           "WHERE paid_cents IS NOT NULL AND (amount_cents IS NULL OR amount_cents != paid_cents)"))
 
 
-MIGRATIONS = [(1, _migrate_v1), (2, _migrate_v2)]
+def _migrate_v3(conn) -> None:
+    """邀请支持长期有效、不限次数：expires_at、max_uses 改为可空并加 last_used_at，SQLite 只能重建表。"""
+    cols = {r[1]: r[3] for r in conn.execute(text("PRAGMA table_info(invites)"))}
+    if not cols or (not cols.get("expires_at") and "last_used_at" in cols):
+        return
+    old = [c for c in cols if c in Invite.__table__.c]
+    conn.execute(text("ALTER TABLE invites RENAME TO invites_old"))
+    Invite.__table__.create(conn)
+    conn.execute(text(f"INSERT INTO invites ({', '.join(old)}) SELECT {', '.join(old)} FROM invites_old"))
+    conn.execute(text("DROP TABLE invites_old"))
+
+
+MIGRATIONS = [(1, _migrate_v1), (2, _migrate_v2), (3, _migrate_v3)]
 
 
 def run_migrations() -> list[int]:

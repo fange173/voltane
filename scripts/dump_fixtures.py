@@ -114,6 +114,7 @@ def main() -> None:
                       ).status_code == 200
         assert d.send("POST", f"/api/vehicles/{phev}/members", {"username": member, "role": "editor"}).status_code == 200
         inv = d.send("POST", f"/api/vehicles/{phev}/invites", {"role": "viewer", "allow_signup": False, "max_uses": 3}).json()
+        d.send("POST", f"/api/vehicles/{phev}/invites", {"role": "editor", "days": None, "max_uses": None})
 
         # 车辆相关
         for tag, vid in cars.items():
