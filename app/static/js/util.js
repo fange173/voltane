@@ -176,6 +176,12 @@ export function parseLocal(s) {
   const [hh, mm] = t.split(":").map(Number);
   return new Date(y, m - 1, day, hh || 0, mm || 0);
 }
+/** 系统时间（加入时间、邀请过期等）是不带时区的 UTC，按 UTC 解析后再按本地显示。 */
+export function parseUTC(s) {
+  if (!s) return null;
+  const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : s + "Z");
+  return isNaN(d) ? null : d;
+}
 const WEEK = "日一二三四五六";
 export function fmtDate(s, { year = "auto", time = false, week = false } = {}) {
   const d = typeof s === "string" ? parseLocal(s) : s;

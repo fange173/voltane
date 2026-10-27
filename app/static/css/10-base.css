@@ -16,10 +16,26 @@ body {
   line-height: 1.5;
   color: var(--fg);
   background: var(--bg);
-  background-image: var(--bg-grad);
-  background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior-y: none;
+}
+/* 背景渐变放在独立的固定层，避免 background-attachment: fixed 在 Safari 滚动时逐帧重绘 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image: var(--bg-grad);
+  pointer-events: none;
+}
+a,
+button,
+input,
+select,
+textarea,
+label,
+[role="button"] {
+  touch-action: manipulation;
 }
 button,
 input,

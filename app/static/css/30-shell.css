@@ -7,7 +7,7 @@
 }
 .main {
   min-width: 0;
-  padding-bottom: calc(var(--nav-h) + var(--safe-b) + 24px);
+  padding-bottom: calc(var(--nav-h) + var(--safe-b) + 32px);
 }
 .view {
   padding: 4px 16px 16px;
@@ -77,31 +77,72 @@
   flex: 1;
 }
 
-/* 底部导航 */
+/* 底部导航：悬浮液态玻璃胶囊；Chromium 额外叠 SVG 折射（.glass-svg），其余为模糊 + 高光描边 */
 .bottom-nav {
+  --nav-pill: 62px;
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 14px;
+  right: 14px;
+  bottom: calc(var(--safe-b) + 10px);
   z-index: 50;
-  height: calc(var(--nav-h) + var(--safe-b));
-  padding-bottom: var(--safe-b);
+  height: var(--nav-pill);
+  max-width: 460px;
+  margin: 0 auto;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   align-items: center;
-  background: var(--glass);
-  backdrop-filter: saturate(1.6) blur(18px);
-  -webkit-backdrop-filter: saturate(1.6) blur(18px);
-  border-top: 1px solid var(--line);
+  padding: 0 5px;
+  border-radius: 31px;
+  background: var(--glass-float);
+  backdrop-filter: saturate(1.8) blur(14px);
+  -webkit-backdrop-filter: saturate(1.8) blur(14px);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-hi), var(--glass-shadow);
+}
+/* 不支持毛玻璃或开启了「降低透明度」时改用不透明底色，保证文字对比度 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .bottom-nav {
+    background: var(--surface-1);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .bottom-nav,
+  .bottom-nav.glass-svg {
+    background: var(--surface-1);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+.bottom-nav.glass-svg {
+  background: var(--glass-float);
+  backdrop-filter: url(#glass-refract) saturate(1.8) blur(5px);
+}
+.nav-ind {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 5px;
+  width: calc((100% - 10px) / 5);
+  border-radius: 25px;
+  background: var(--glass-ind);
+  box-shadow: inset 0 1px 0 var(--glass-edge);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(calc(var(--nav-idx, 0) * 100%));
+  transition: transform 0.38s var(--ease), opacity 0.2s;
+}
+.bottom-nav[data-idx] .nav-ind {
+  opacity: 1;
 }
 .nav-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--fg-faint);
+  color: var(--fg-muted);
   height: 100%;
   justify-content: center;
   transition: color 0.15s;
@@ -110,20 +151,25 @@
   color: var(--brand);
 }
 .nav-fab {
+  position: relative;
   justify-self: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 20px;
-  margin-top: -18px;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
   background: linear-gradient(135deg, var(--fuel) 0%, var(--brand) 55%, var(--elec) 110%);
   color: #fff;
   display: grid;
   place-items: center;
-  box-shadow: 0 10px 24px -8px var(--brand), 0 0 0 5px var(--bg);
+  box-shadow: inset 0 1px 0 var(--glass-hi), 0 8px 18px -8px var(--brand);
   transition: transform 0.15s var(--ease);
 }
 .nav-fab:active {
   transform: scale(0.93);
+}
+@media (prefers-reduced-motion: reduce) {
+  .nav-ind {
+    transition: none;
+  }
 }
 
 /* PC 侧栏 */

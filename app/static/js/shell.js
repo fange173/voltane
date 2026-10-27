@@ -1,5 +1,6 @@
 /* shell.js — 登录后的整体布局：PC 侧栏、顶栏、底部导航、右侧栏、车辆切换与「＋」面板 */
 import { icon } from "./icons.js";
+import { initGlass } from "./glass.js";
 import { currentRoute, navigate } from "./router.js";
 import { ENERGY_LABEL, canEdit, currentVehicle, on, setVehicle, state } from "./state.js";
 import { avatar, sheet } from "./ui.js";
@@ -41,6 +42,7 @@ export function buildShell() {
       <aside class="aside" id="aside"></aside>
     </div>
     <nav class="bottom-nav" id="bottom-nav">
+      <span class="nav-ind" aria-hidden="true"></span>
       ${navItem(NAV[0])}${navItem(NAV[1])}
       <button class="nav-fab" id="fab" aria-label="记一笔">${icon("plus", 28)}</button>
       ${navItem(NAV[2])}${navItem(NAV[6])}
@@ -50,6 +52,7 @@ export function buildShell() {
   $("#fab").addEventListener("click", () => openQuickAdd());
   window.addEventListener("scroll", () => $("#topbar")?.classList.toggle("scrolled", window.scrollY > 4), { passive: true });
   on("vehicle-changed", refreshChrome);
+  initGlass($("#bottom-nav"));
   built = true;
   refreshChrome();
 }
@@ -93,6 +96,14 @@ function renderSidebar() {
 
 export function setNav(key) {
   $$("[data-nav]").forEach((a) => a.classList.toggle("on", a.dataset.nav === key));
+  const nav = $("#bottom-nav");
+  if (!nav) return;
+  const idx = [...nav.children].filter((c) => !c.classList.contains("nav-ind")).findIndex((c) => c.classList.contains("on"));
+  if (idx < 0) delete nav.dataset.idx;
+  else {
+    nav.dataset.idx = idx;
+    nav.style.setProperty("--nav-idx", idx);
+  }
 }
 
 export function setTitle(t) {

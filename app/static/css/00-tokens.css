@@ -10,6 +10,11 @@
   --surface-2: #f6f7fb;
   --surface-3: #eceef5;
   --glass: rgba(255, 255, 255, 0.82);
+  --glass-float: rgba(255, 255, 255, 0.5);
+  --glass-edge: rgba(255, 255, 255, 0.7);
+  --glass-hi: rgba(255, 255, 255, 0.95);
+  --glass-ind: rgba(20, 24, 45, 0.07);
+  --glass-shadow: 0 10px 30px -10px rgba(20, 24, 45, 0.3);
   --line: rgba(20, 24, 45, 0.07);
   --line-strong: rgba(20, 24, 45, 0.13);
   --scrim: rgba(12, 14, 28, 0.42);
@@ -73,6 +78,11 @@
     --surface-2: #1b1f2e;
     --surface-3: #242a3b;
     --glass: rgba(21, 24, 36, 0.82);
+    --glass-float: rgba(30, 34, 52, 0.62);
+    --glass-edge: rgba(255, 255, 255, 0.16);
+    --glass-hi: rgba(255, 255, 255, 0.28);
+    --glass-ind: rgba(255, 255, 255, 0.1);
+    --glass-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6);
     --line: rgba(230, 233, 255, 0.07);
     --line-strong: rgba(230, 233, 255, 0.14);
     --scrim: rgba(0, 0, 0, 0.6);
@@ -116,6 +126,11 @@
   --surface-2: #1b1f2e;
   --surface-3: #242a3b;
   --glass: rgba(21, 24, 36, 0.82);
+  --glass-float: rgba(30, 34, 52, 0.62);
+  --glass-edge: rgba(255, 255, 255, 0.16);
+  --glass-hi: rgba(255, 255, 255, 0.28);
+  --glass-ind: rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6);
   --line: rgba(230, 233, 255, 0.07);
   --line-strong: rgba(230, 233, 255, 0.14);
   --scrim: rgba(0, 0, 0, 0.6);

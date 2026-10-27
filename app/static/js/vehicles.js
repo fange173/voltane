@@ -15,7 +15,7 @@ import {
   state,
 } from "./state.js";
 import { avatar, bindChips, bindSegmented, confirmDialog, emptyState, promptDialog, setLoading, sheet, skeleton, switchRow, toast, toastError } from "./ui.js";
-import { $, $$, ago, api, esc, fixed, fmtDate, html, km, money, num, raw, toNum, todayISO, yuanToCents } from "./util.js";
+import { $, $$, ago, api, esc, fixed, fmtDate, html, km, money, num, parseUTC, raw, toNum, todayISO, yuanToCents } from "./util.js";
 
 const COLORS = ["#4F46E5", "#0EA5E9", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#111827", "#64748B"];
 const TYPE_DESC = {
@@ -398,12 +398,12 @@ export async function vehiclePage() {
         : html`<div class="row ok-c small" style="margin-top:10px">${raw(icon("check", 18))}数据很完整</div>`}
     </div>
 
-    <div class="section-title"><span>成员（${members.length}）</span>${owner ? html`<button class="link-btn" id="m-add">${raw(icon("plus", 14))} 邀请</button>` : ""}</div>
-    <div class="card flush list" id="members">${members.map((m) => html`<div class="list-item">${avatar(m, "")}<span class="grow">${m.name}${m.is_me ? html` <span class="badge">我</span>` : ""}<div class="tiny muted">@${m.username} · ${fmtDate(m.joined_at)} 加入</div></span>
+    <div class="section-title"><span>成员（${members.length}）</span>${owner && !v.is_archived ? html`<button class="link-btn" id="m-add">${raw(icon("plus", 14))} 邀请</button>` : ""}</div>
+    <div class="card flush list" id="members">${members.map((m) => html`<div class="list-item">${avatar(m, "")}<span class="grow">${m.name}${m.is_me ? html` <span class="badge">我</span>` : ""}<div class="tiny muted">@${m.username} · ${fmtDate(parseUTC(m.joined_at))} 加入</div></span>
       ${owner && !m.is_me ? html`<button class="chip sm" data-role="${m.id}">${m.role_label} ${raw(icon("down", 12))}</button>` : html`<span class="badge">${m.role_label}</span>`}</div>`)}</div>
     ${owner && invites.length ? html`<div class="card flush list" style="margin-top:10px">${invites.map((i) => html`<div class="list-item"><span class="ico sm brand">${raw(icon("key", 16))}</span>
       <span class="grow"><b class="num code">${i.code}</b><div class="tiny muted">${inviteMeta(i)}</div></span>
-      <button class="icon-btn" data-copy="${i.code}" aria-label="复制链接">${raw(icon("copy", 18))}</button><button class="icon-btn" data-revoke="${i.id}" aria-label="作废">${raw(icon("trash", 18))}</button></div>`)}</div>` : ""}
+      ${v.is_archived ? "" : html`<button class="icon-btn" data-copy="${i.code}" aria-label="复制链接">${raw(icon("copy", 18))}</button>`}<button class="icon-btn" data-revoke="${i.id}" aria-label="作废">${raw(icon("trash", 18))}</button></div>`)}</div>` : ""}
 
     <div class="section-title"><span>历史 / 周期汇总</span>${editable ? html`<button class="link-btn" id="s-add">${raw(icon("plus", 14))} 添加</button>` : ""}</div>
     ${summaries.length ? html`<div class="card flush list">${summaries.map((s) => html`<button class="list-item" data-sum="${s.id}"><span class="ico sm">${raw(icon("history", 16))}</span>
@@ -577,7 +577,7 @@ function roleSheet(v, m, hasInvites) {
 }
 
 function inviteMeta(i) {
-  return [i.role_label, i.expires_at ? `${fmtDate(i.expires_at)} 过期` : "长期有效",
+  return [i.role_label, i.expires_at ? `${fmtDate(parseUTC(i.expires_at))} 过期` : "长期有效",
     i.max_uses ? `已用 ${i.used_count}/${i.max_uses}` : `不限次数 · 已加入 ${i.used_count} 人`,
     i.allow_signup && "可注册"].filter(Boolean).join(" · ");
 }

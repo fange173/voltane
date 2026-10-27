@@ -1,5 +1,5 @@
 /* Voltane Service Worker — 只缓存应用壳；/api/** 一律走网络，离线时由前端发件箱兜底 */
-const CACHE = "voltane-shell-v1";
+const CACHE = "voltane-shell-v3";
 const SHELL = ["/", "/static/style.css", "/static/js/main.js", "/static/icon.svg", "/static/icon-192.png", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
