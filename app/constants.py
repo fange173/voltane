@@ -4,6 +4,7 @@ constants.py — 枚举取值、费用分类、提醒模板
 
 ENERGY_TYPES = ("ice", "hev", "phev", "erev", "bev")
 RECORD_KINDS = ("fuel", "charge", "snapshot")
+# "super"（超充）是旧数据里的取值，只读兼容，写入时并入 "dc"
 CHARGE_TYPES = ("home", "public_ac", "dc", "super", "swap")
 FUEL_GRADES = ("92", "95", "98", "0", "E92", "E95", "other")
 SNAPSHOT_TAGS = ("ledger_start", "delivery", "before_park", "after_park", "month_start", "other")

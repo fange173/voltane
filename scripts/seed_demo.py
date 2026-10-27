@@ -1,5 +1,5 @@
 """
-seed_demo.py — 生成演示数据：一辆插混（中途接入 + 历史汇总 + 哨兵静置）和一辆纯电，归属 admin。
+seed_demo.py — 生成演示数据：一辆插混（中途接入 + 历史汇总 + 哨兵静置）、一辆纯电和一辆数据很少的插混，归属 admin。
 车名带「演示」，备注带 [demo]；--clear 删除全部演示车辆。
 
 用法：DATABASE_URL=sqlite:////path/to/db python scripts/seed_demo.py [--clear]
@@ -189,9 +189,27 @@ def seed_bev(db, admin: User, today: date) -> None:
             cents = round(kwh * price * 100)
             db.add(Record(vehicle_id=v.id, kind="charge", occurred_at=datetime.combine(day, datetime.min.time()).replace(hour=21),
                           odometer_km=round(odo), soc_before_pct=s0, soc_after_pct=target, charge_kwh=kwh,
-                          charge_type="super" if dc else "home", charge_unit_price=price, paid_cents=cents, amount_cents=cents,
+                          charge_type="dc" if dc else "home", charge_unit_price=price, paid_cents=cents, amount_cents=cents,
                           place_name="超充站" if dc else "小区充电桩", created_by=admin.id, payer_user_id=admin.id, note=TAG))
             soc = target
+
+
+def seed_sparse(db, admin: User, today: date) -> None:
+    """中途开始用、数据很少的车：一条起点快照加两条没填电量和里程的充电记录，各项质量等级为 D。"""
+    v = Vehicle(name="宋PLUS（演示·少量数据）", energy_type="phev", tank_capacity_l=48, battery_usable_kwh=18.3,
+                color="#10B981", created_by=admin.id)
+    db.add(v)
+    db.flush()
+    db.add(VehicleMember(vehicle_id=v.id, user_id=admin.id, role="owner"))
+
+    def at(days_ago: int, hour: int) -> datetime:
+        return datetime.combine(today - timedelta(days=days_ago), datetime.min.time()).replace(hour=hour)
+
+    db.add(Record(vehicle_id=v.id, kind="snapshot", occurred_at=at(6, 8), odometer_km=23400, snapshot_tag="ledger_start",
+                  soc_before_pct=55, created_by=admin.id, updated_by=admin.id, note=TAG))
+    for days_ago, s0 in ((4, 30), (1, 25)):
+        db.add(Record(vehicle_id=v.id, kind="charge", occurred_at=at(days_ago, 21), soc_before_pct=s0, soc_after_pct=100,
+                      charge_type="home", created_by=admin.id, updated_by=admin.id, note=TAG))
 
 
 def main() -> None:
@@ -205,8 +223,9 @@ def main() -> None:
         today = date.today()
         seed_phev(db, admin, today)
         seed_bev(db, admin, today)
+        seed_sparse(db, admin, today)
         db.commit()
-        print("已生成演示数据：秦PLUS（演示）、Model Y（演示）")
+        print("已生成演示数据：秦PLUS（演示）、Model Y（演示）、宋PLUS（演示·少量数据）")
 
 
 if __name__ == "__main__":

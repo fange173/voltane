@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -22,6 +23,7 @@ from app.auth import (
     get_current_user,
     record_login_failure,
     set_auth_cookie,
+    token_body,
     user_to_dict,
 )
 from app.database import Invite, User, VehicleMember, get_db, get_setting, hash_password, utcnow, verify_password
@@ -36,6 +38,7 @@ class LoginIn(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=1, max_length=128)
     remember: bool = True
+    client: Literal["web", "ios"] = "web"
 
 
 class ChangePasswordIn(BaseModel):
@@ -53,6 +56,7 @@ class SignupIn(BaseModel):
     username: str = Field(..., min_length=2, max_length=32)
     password: str = Field(..., min_length=6, max_length=128)
     display_name: str = Field("", max_length=32)
+    client: Literal["web", "ios"] = "web"
 
 
 @router.post("/login")
@@ -65,6 +69,9 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
         record_login_failure(ip)
         raise
     clear_login_failures(ip)
+    if body.client == "ios":
+        token, max_age = create_token(user, True)
+        return {**user_to_dict(user), "cookie_secure": COOKIE_SECURE, **token_body(token, max_age)}
     token, max_age = create_token(user, body.remember)
     set_auth_cookie(response, token, max_age)
     return {**user_to_dict(user), "cookie_secure": COOKIE_SECURE}
@@ -76,14 +83,32 @@ def logout(response: Response):
     return {"ok": True}
 
 
+@router.post("/refresh")
+def refresh(request: Request, user: User = Depends(get_current_user)):
+    """换发新的 90 天令牌；只给请求头带 Bearer 的客户端，Cookie 会话拿不到令牌。"""
+    if not request.state.via_bearer:
+        raise HTTPException(400, "仅供 Bearer 令牌客户端使用")
+    token, max_age = create_token(user, True)
+    return token_body(token, max_age)
+
+
+@router.post("/logout-all")
+def logout_all(response: Response, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """credentials_version 加 1，所有设备和浏览器上已签发的令牌立即失效。"""
+    user.credentials_version = (user.credentials_version or 0) + 1
+    db.commit()
+    clear_auth_cookie(response)
+    return {"ok": True}
+
+
 @router.get("/me")
 def me(user: User = Depends(get_current_user)):
     return user_to_dict(user)
 
 
 @router.post("/change-password")
-def change_password(body: ChangePasswordIn, response: Response, user: User = Depends(get_current_user),
-                    db: Session = Depends(get_db)):
+def change_password(body: ChangePasswordIn, request: Request, response: Response,
+                    user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not verify_password(body.old_password, user.password_hash):
         raise HTTPException(400, "原密码不正确")
     user.password_hash = hash_password(body.new_password)
@@ -91,6 +116,8 @@ def change_password(body: ChangePasswordIn, response: Response, user: User = Dep
     user.credentials_version = (user.credentials_version or 0) + 1
     db.commit()
     token, max_age = create_token(user, True)
+    if request.state.via_bearer:
+        return {"ok": True, **token_body(token, max_age)}
     set_auth_cookie(response, token, max_age)
     return {"ok": True}
 
@@ -146,5 +173,7 @@ def signup(body: SignupIn, response: Response, db: Session = Depends(get_db)):
     log_activity(db, inv.vehicle_id, user, "join", "member", user.id, f"{user.name} 通过邀请加入")
     db.commit()
     token, max_age = create_token(user, True)
+    if body.client == "ios":
+        return {**user_to_dict(user), **token_body(token, max_age)}
     set_auth_cookie(response, token, max_age)
     return user_to_dict(user)

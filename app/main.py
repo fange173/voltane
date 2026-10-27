@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,7 +20,7 @@ from sqlalchemy import delete, text
 from sqlalchemy.orm import Session
 
 from app.auth import warn_if_weak_secret
-from app.database import ActivityLog, Expense, Record, SessionLocal, get_db, init_db, utcnow
+from app.database import ActivityLog, Expense, Record, SessionLocal, get_db, init_db, localnow, utcnow
 from app.routers import admin, auth, expenses, records, stats, vehicles
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -29,6 +30,8 @@ TRASH_RETENTION_DAYS = int(os.getenv("TRASH_RETENTION_DAYS", "30"))
 ACTIVITY_RETENTION_DAYS = int(os.getenv("ACTIVITY_RETENTION_DAYS", "180"))
 ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").lower() in ("1", "true", "yes")
 APP_VERSION = "0.1.0"
+# 只有不兼容的接口改动才加 1，iOS 客户端据此提示更新
+API_VERSION = 1
 
 
 def run_housekeeping() -> None:
@@ -101,7 +104,11 @@ def health(db: Session = Depends(get_db)):
         ok = True
     except Exception:
         ok = False
-    return JSONResponse({"ok": ok, "service": "voltane", "version": APP_VERSION}, status_code=200 if ok else 503)
+    body = {
+        "ok": ok, "service": "voltane", "version": APP_VERSION, "api_version": API_VERSION,
+        "tz": os.getenv("TZ") or time.tzname[0], "server_time": localnow().isoformat(timespec="seconds"),
+    }
+    return JSONResponse(body, status_code=200 if ok else 503)
 
 
 for r in (auth.router, vehicles.router, records.router, expenses.router, stats.router, admin.router):

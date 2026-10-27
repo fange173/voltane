@@ -80,7 +80,7 @@ class RecordIn(BaseModel):
     def _ct(cls, v):
         if v is not None and v not in CHARGE_TYPES:
             raise ValueError("充电方式不正确")
-        return v
+        return "dc" if v == "super" else v
 
     @field_validator("snapshot_tag")
     @classmethod

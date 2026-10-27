@@ -211,7 +211,7 @@ def energy(vehicle_id: int, date_from: Optional[date] = None, date_to: Optional[
             r = p.rec
             if r.kind != "charge" or not d0 <= r.ts.date() <= d1:
                 continue
-            t = by_type[r.charge_type or "home"]
+            t = by_type["dc" if r.charge_type == "super" else (r.charge_type or "home")]
             t["kwh"] += r.charge_kwh or 0
             t["cents"] += r.paid_cents or 0
             t["count"] += 1
@@ -299,7 +299,7 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
                 if r.paid_cents and qty > 0 and "paid_cents" not in r.estimated_fields:
                     prices["fuel" if r.kind == "fuel" else "elec"].append({
                         "ts": iso(r.ts), "price": round(r.paid_cents / 100 / qty, 3),
-                        "group": r.fuel_grade if r.kind == "fuel" else (r.charge_type or "home"),
+                        "group": r.fuel_grade if r.kind == "fuel" else ("dc" if r.charge_type == "super" else (r.charge_type or "home")),
                         "vehicle_id": v.id})
                 if r.place_name:
                     pl = places[(r.kind, r.place_name)]

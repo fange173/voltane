@@ -9,7 +9,9 @@ export const state = {
 };
 
 export const ENERGY_LABEL = { ice: "燃油", hev: "油混", phev: "插混", erev: "增程", bev: "纯电" };
-export const CHARGE_LABEL = { home: "家充", public_ac: "公共慢充", dc: "快充", super: "超充", swap: "换电" };
+export const CHARGE_LABEL = { home: "家充", public_ac: "公共慢充", dc: "快充", swap: "换电" };
+/** 旧数据里的「超充」并入「快充」。 */
+export const chargeLabel = (k) => CHARGE_LABEL[k === "super" ? "dc" : k];
 export const FUEL_GRADES = ["92", "95", "98", "0", "E92", "E95"];
 export const gradeLabel = (g) => (g === "0" ? "0# 柴油" : g ? `${g}#` : "");
 export const SNAPSHOT_TAGS = {

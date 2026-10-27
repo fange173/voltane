@@ -4,7 +4,7 @@ import { pending } from "./outbox.js";
 import { navigate } from "./router.js";
 import { listen, resetView, setNav, setTitle, view } from "./shell.js";
 import {
-  CHARGE_LABEL,
+  chargeLabel,
   EXPENSE_LABEL,
   SEGMENT_TAGS,
   SNAPSHOT_TAGS,
@@ -25,8 +25,8 @@ export function itemTitle(it) {
   if (it.type === "expense") return (EXPENSE_LABEL[it.category] || "费用") + (it.title ? ` · ${it.title}` : "");
   if (it.kind === "fuel") return `${gradeLabel(it.fuel_grade) || "加油"} ${it.fuel_liters != null ? num(it.fuel_liters) + "L" : ""}`.trim();
   if (it.kind === "charge") {
-    if (it.status === "in_progress") return `${CHARGE_LABEL[it.charge_type] || "充电"} · 充电中`;
-    return `${CHARGE_LABEL[it.charge_type] || "充电"} ${it.charge_kwh != null ? num(it.charge_kwh) + "kWh" : ""}`.trim();
+    if (it.status === "in_progress") return `${chargeLabel(it.charge_type) || "充电"} · 充电中`;
+    return `${chargeLabel(it.charge_type) || "充电"} ${it.charge_kwh != null ? num(it.charge_kwh) + "kWh" : ""}`.trim();
   }
   const parts = [];
   if (it.soc_before_pct != null) parts.push(`电 ${num(it.soc_before_pct, 0)}%`);
@@ -271,7 +271,7 @@ function detailHtml(d, v) {
       add("当前电量", d.soc_before_pct != null ? num(d.soc_before_pct, 0) + "%" : null);
     }
     if (d.kind === "charge") {
-      add("方式", CHARGE_LABEL[d.charge_type]);
+      add("方式", chargeLabel(d.charge_type));
       add("电量", d.soc_before_pct != null || d.soc_after_pct != null ? `${d.soc_before_pct != null ? num(d.soc_before_pct, 0) + "%" : "?"} → ${d.soc_after_pct != null ? num(d.soc_after_pct, 0) + "%" : d.charge_to_limit ? "上限" : "?"}` : null);
       add("充电量", d.charge_kwh != null ? num(d.charge_kwh) + " kWh" + (d.estimated_fields?.includes("charge_kwh") ? "（推算）" : "") : null);
       add("单价", d.charge_unit_price != null ? fixed(d.charge_unit_price, 3) + " 元/度" : null);

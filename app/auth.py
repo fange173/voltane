@@ -7,11 +7,11 @@ import os
 import threading
 import time
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional
 
 import jwt
-from fastapi import Cookie, Depends, HTTPException, Request, Response
+from fastapi import Cookie, Depends, Header, HTTPException, Request, Response
 from jwt import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -47,6 +47,15 @@ def create_token(user: User, remember: bool = False) -> tuple[str, int]:
     life = timedelta(days=REMEMBER_EXPIRE_DAYS) if remember else timedelta(hours=SESSION_EXPIRE_HOURS)
     payload = {"uid": user.id, "cv": int(user.credentials_version or 0), "exp": utcnow() + life}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM), int(life.total_seconds())
+
+
+def token_expires_at(max_age: int) -> str:
+    """令牌到期时间，UTC，ISO 格式带 Z，给 iOS 客户端判断刷新时机。"""
+    return (utcnow() + timedelta(seconds=max_age)).isoformat(timespec="seconds") + "Z"
+
+
+def token_body(token: str, max_age: int) -> dict:
+    return {"token": token, "expires_at": token_expires_at(max_age)}
 
 
 def set_auth_cookie(response: Response, token: str, max_age: int) -> None:
@@ -120,11 +129,19 @@ def authenticate(db: Session, username: str, password: str) -> User:
 
 
 def get_current_user(
+    request: Request,
     token: Optional[str] = Cookie(default=None, alias=COOKIE_NAME),
+    authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ) -> User:
+    """优先读 Authorization: Bearer；带了请求头但令牌无效时直接 401，不回退去读 Cookie。"""
+    via_bearer = authorization is not None
+    if via_bearer:
+        scheme, _, value = authorization.partition(" ")
+        token = value.strip() if scheme.lower() == "bearer" else None
+    request.state.via_bearer = via_bearer
     if not token:
-        raise HTTPException(401, "未登录")
+        raise HTTPException(401, "登录已失效，请重新登录" if via_bearer else "未登录")
     try:
         data = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         uid, cv = int(data["uid"]), int(data.get("cv", 0))

@@ -250,7 +250,7 @@ def fuel_level_text(pct, v: Optional[Vehicle]) -> str:
     return f"{fmt_num(pct, 0)}%"
 
 
-CHARGE_LABEL = {"home": "家充", "public_ac": "公共慢充", "dc": "快充", "super": "超充", "swap": "换电"}
+CHARGE_LABEL = {"home": "家充", "public_ac": "公共慢充", "dc": "快充", "super": "快充", "swap": "换电"}
 
 
 def record_summary_text(r: Record) -> str:
