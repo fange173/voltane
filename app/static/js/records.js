@@ -13,7 +13,6 @@ import {
   emit,
   fuelLevelText,
   gradeLabel,
-  payerEnabled,
   state,
 } from "./state.js";
 import { avatar, confirmDialog, emptyState, qTag, sheet, skeleton, toast, toastError } from "./ui.js";
@@ -42,8 +41,8 @@ export function itemIcon(it) {
 }
 
 function badgeHtml(b) {
-  const unit = b.energy === "fuel" ? "L" : "kWh";
-  if (b.kind === "idle" && b.per_day != null) return html`<span class="badge">静置 ${num(b.per_day)} kWh/天</span>`;
+  const unit = b.energy === "elec" ? "kWh" : b.energy === "combined" ? "L 折合" : "L";
+  if (b.kind === "idle" && b.per_day != null) return html`<span class="badge ${b.anomaly ? "warn" : ""}">${b.anomaly ? raw("●") : ""}静置 ${num(b.per_day)} kWh/天</span>`;
   if (b.per100 == null) return "";
   const cls = b.anomaly ? "warn" : b.energy === "fuel" ? "fuel" : "elec";
   return html`<span class="badge ${cls}">${b.anomaly ? raw("●") : ""}${num(b.per100)} ${unit}${b.quality !== "A" ? "·估" : ""}</span>`;
@@ -57,7 +56,7 @@ export function itemRow(it, { showDate = true } = {}) {
   else if (it.type === "record" && it.odometer_estimated) sub.push("里程估算");
   if (it.place_name) sub.push(it.place_name);
   if (it.type === "expense" && it.vendor) sub.push(it.vendor);
-  const cents = it.type === "expense" ? it.amount_cents : it.paid_cents;
+  const cents = it.amount_cents;
   const tags = [];
   if (it.kind === "fuel" && it.fuel_is_full) tags.push(html`<span class="badge fuel">满</span>`);
   if (it.source === "backfill" || it.source === "import") tags.push(html`<span class="badge">补录</span>`);
@@ -186,7 +185,7 @@ function monthSummary(arr) {
   let kwh = 0;
   const odos = [];
   for (const it of arr) {
-    cents += (it.type === "expense" ? it.amount_cents : it.paid_cents) || 0;
+    cents += (it.amount_cents) || 0;
     if (it.kind === "fuel") fuel += it.fuel_liters || 0;
     if (it.kind === "charge") kwh += it.charge_kwh || 0;
     if (it.odometer_km != null && !it.odometer_estimated) odos.push(it.odometer_km);
@@ -249,7 +248,7 @@ export async function openDetail(type, id) {
 }
 
 function detailHtml(d, v) {
-  const cents = d.type === "expense" ? d.amount_cents : d.paid_cents;
+  const cents = d.amount_cents;
   const kv = [];
   const add = (k, val) => val != null && val !== "" && kv.push([k, val]);
   add("时间", fmtDate(d.occurred_at, { time: true, year: true, week: true }));
@@ -284,12 +283,10 @@ function detailHtml(d, v) {
       add("电量", d.soc_before_pct != null ? num(d.soc_before_pct, 0) + "%" : null);
       add("油量", fuelLevelText(d.fuel_level_before_pct, v) || null);
     }
-    if (d.amount_cents != null && d.paid_cents != null && d.amount_cents !== d.paid_cents) add("优惠", money(d.amount_cents - d.paid_cents));
     if (d.extra_fee_cents) add("附加费", money(d.extra_fee_cents));
     add("地点", d.place_name);
     if (d.missed_before) add("漏记", "上次补能没记");
   }
-  if (payerEnabled()) add("付款人", d.payer?.name);
   add("备注", d.note);
   const who = d.created_by ? html`${avatar(d.created_by, "sm")} ${d.created_by.name} 记录${d.updated_by && d.updated_by.id !== d.created_by.id ? html` · ${d.updated_by.name} 修改过` : ""}` : "";
   return html`
@@ -330,7 +327,7 @@ function segmentCard(s, d, v) {
   const canMark = !isComb && d.can_edit;
   return html`<div class="card seg-card ${s.energy}">
     <div class="row between"><span class="card-title">${title}</span><span class="tiny muted">${fmtDate(s.start_ts)} → ${fmtDate(s.end_ts)} · ${km(s.distance)} km</span></div>
-    <div class="row wrap seg-head">${head}${s.anomaly ? html`<span class="badge warn">${{ high: "偏高", low: "偏低", parked: "疑似停放耗电" }[s.anomaly]}</span>` : ""}</div>
+    <div class="row wrap seg-head">${head}${s.anomaly ? html`<span class="badge warn">${{ high: "偏高", low: "偏低", parked: "疑似停放耗电", idle_high: "停车耗电偏高" }[s.anomaly]}</span>` : ""}</div>
     ${isComb && s.status === "ok" ? html`<div class="row wrap tiny muted" style="gap:12px">
       ${s.cost_per_km != null ? html`<span>每公里 ¥${fixed(s.cost_per_km)}</span>` : ""}
       ${s.equiv_per100 != null ? html`<span>等效油耗 ${num(s.equiv_per100)} L</span>` : ""}

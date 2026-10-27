@@ -6,6 +6,12 @@ ENERGY_TYPES = ("ice", "hev", "phev", "erev", "bev")
 RECORD_KINDS = ("fuel", "charge", "snapshot")
 # "super"（超充）是旧数据里的取值，只读兼容，写入时并入 "dc"
 CHARGE_TYPES = ("home", "public_ac", "dc", "super", "swap")
+
+
+def norm_charge_type(v):
+    """写入前把旧的「超充」并入「快充」。"""
+    return "dc" if v == "super" else v
+
 FUEL_GRADES = ("92", "95", "98", "0", "E92", "E95", "other")
 SNAPSHOT_TAGS = ("ledger_start", "delivery", "before_park", "after_park", "month_start", "other")
 SEGMENT_TAGS = ("normal", "idle", "winter", "highway", "load", "abnormal")

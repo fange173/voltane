@@ -57,7 +57,7 @@ class Rec:
     charge_full: bool = False
     soc_before: Optional[float] = None
     soc_after: Optional[float] = None
-    paid_cents: int = 0
+    cost_cents: int = 0
     extra_cents: int = 0
     missed_before: bool = False
     snapshot_tag: Optional[str] = None

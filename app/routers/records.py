@@ -15,9 +15,10 @@ from sqlalchemy.orm import Session
 
 from app.access import can_delete_entity, require_vehicle
 from app.auth import get_current_user
-from app.constants import CHARGE_TYPES, SEGMENT_TAGS, SNAPSHOT_TAGS
+from app.constants import CHARGE_TYPES, SEGMENT_TAGS, SNAPSHOT_TAGS, norm_charge_type
 from app.database import PeriodSummary, Place, Record, SegmentMark, User, Vehicle, VehicleMember, get_db, utcnow
 from app.engine.aggregate import avg_daily_km, odo_observations, segment_dict
+from app.engine.ledger import equiv_per100
 from app.insights import explain, latest_odo_of
 from app.services import (
     active_summaries,
@@ -62,7 +63,6 @@ class RecordIn(BaseModel):
     soc_before_pct: Optional[float] = Field(None, ge=0, le=100)
     soc_after_pct: Optional[float] = Field(None, ge=0, le=100)
     amount_cents: Optional[int] = Field(None, ge=0, le=10_000_000)
-    paid_cents: Optional[int] = Field(None, ge=0, le=10_000_000)
     extra_fee_cents: Optional[int] = Field(None, ge=0, le=10_000_000)
     place_id: Optional[int] = None
     place_name: Optional[str] = Field(None, max_length=64)
@@ -70,7 +70,6 @@ class RecordIn(BaseModel):
     lng: Optional[float] = Field(None, ge=-180, le=180)
     missed_before: bool = False
     snapshot_tag: Optional[str] = None
-    payer_user_id: Optional[int] = None
     note: str = Field("", max_length=500)
     version: Optional[int] = None
     force: bool = False
@@ -80,7 +79,7 @@ class RecordIn(BaseModel):
     def _ct(cls, v):
         if v is not None and v not in CHARGE_TYPES:
             raise ValueError("充电方式不正确")
-        return "dc" if v == "super" else v
+        return norm_charge_type(v)
 
     @field_validator("snapshot_tag")
     @classmethod
@@ -103,8 +102,8 @@ FIELDS_BY_KIND = {
     "snapshot": {"soc_before_pct", "fuel_level_before_pct", "snapshot_tag"},
 }
 KIND_SPECIFIC = set().union(*FIELDS_BY_KIND.values())
-COMMON = {"occurred_at", "odometer_km", "odometer_estimated", "source", "amount_cents", "paid_cents",
-          "extra_fee_cents", "place_id", "place_name", "lat", "lng", "missed_before", "payer_user_id", "note",
+COMMON = {"occurred_at", "odometer_km", "odometer_estimated", "source", "amount_cents",
+          "extra_fee_cents", "place_id", "place_name", "lat", "lng", "missed_before", "note",
           "status"}
 
 
@@ -143,10 +142,6 @@ def _fill(r: Record, body: RecordIn, v: Vehicle) -> None:
         r.fuel_level_before_pct = r.fuel_level_after_pct = None
     if r.odometer_km is None:
         r.odometer_estimated = True
-    if r.paid_cents is None:
-        r.paid_cents = r.amount_cents
-    if r.amount_cents is None:
-        r.amount_cents = r.paid_cents
     r.estimated_fields = json.dumps(sorted(set(body.estimated_fields)))
     r.note = (body.note or "").strip()
 
@@ -190,7 +185,7 @@ def _find_duplicate(db: Session, v: Vehicle, r: Record) -> Optional[Record]:
             c.odometer_km is not None and r.odometer_km is not None and abs(c.odometer_km - r.odometer_km) < 1)
         same_levels = r.kind != "snapshot" or (
             c.soc_before_pct == r.soc_before_pct and c.fuel_level_before_pct == r.fuel_level_before_pct)
-        if same_odo and same_levels and (c.paid_cents or 0) == (r.paid_cents or 0):
+        if same_odo and same_levels and (c.amount_cents or 0) == (r.amount_cents or 0):
             return c
     return None
 
@@ -224,11 +219,6 @@ def _touch_place(p: Optional[Place], r: Record) -> None:
         p.default_charge_type = r.charge_type or p.default_charge_type
 
 
-def _check_payer(db: Session, vid: int, payer: Optional[int]) -> None:
-    if payer and not db.get(VehicleMember, (vid, payer)):
-        raise HTTPException(400, "付款人不是这辆车的成员")
-
-
 @router.post("/records")
 def create_record(body: RecordIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     v, _ = require_vehicle(db, user, body.vehicle_id, "editor")
@@ -243,9 +233,6 @@ def create_record(body: RecordIn, user: User = Depends(get_current_user), db: Se
     _fill(r, body, v)
     place, pname = _resolve_place(db, v, user, body)
     r.place_id, r.place_name = (place.id if place else None), pname
-    if r.payer_user_id is None:
-        r.payer_user_id = user.id
-    _check_payer(db, v.id, r.payer_user_id)
     if not body.force:
         dup = _find_duplicate(db, v, r)
         if dup:
@@ -289,7 +276,6 @@ def update_record(rid: int, body: RecordIn, user: User = Depends(get_current_use
     if place and place.id != r.place_id:
         _touch_place(place, r)
     r.place_id, r.place_name = (place.id if place else None), pname
-    _check_payer(db, v.id, r.payer_user_id)
     r.updated_by = user.id
     r.version = (r.version or 1) + 1
     if r.snapshot_tag == "delivery" and r.odometer_km is not None and not r.odometer_estimated:
@@ -402,23 +388,21 @@ def list_records(vehicle_id: int, kind: Optional[str] = None, q: Optional[str] =
 
 
 def _attach_users(db: Session, items: list) -> None:
-    """record_dict / expense_dict 未带用户时，批量补上记录人和付款人。"""
+    """record_dict / expense_dict 未带用户时，批量补上记录人。"""
     from app.database import Expense
 
     rec_ids = [it["id"] for it in items if it["type"] == "record"]
     exp_ids = [it["id"] for it in items if it["type"] == "expense"]
     owners = {}
     if rec_ids:
-        for rid, cb, pay in db.execute(select(Record.id, Record.created_by, Record.payer_user_id).where(Record.id.in_(rec_ids))):
-            owners[("record", rid)] = (cb, pay)
+        for rid, cb in db.execute(select(Record.id, Record.created_by).where(Record.id.in_(rec_ids))):
+            owners[("record", rid)] = cb
     if exp_ids:
-        for eid, cb, pay in db.execute(select(Expense.id, Expense.created_by, Expense.payer_user_id).where(Expense.id.in_(exp_ids))):
-            owners[("expense", eid)] = (cb, pay)
-    umap = users_map(db, [u for pair in owners.values() for u in pair])
+        for eid, cb in db.execute(select(Expense.id, Expense.created_by).where(Expense.id.in_(exp_ids))):
+            owners[("expense", eid)] = cb
+    umap = users_map(db, list(owners.values()))
     for it in items:
-        cb, pay = owners.get((it["type"], it["id"]), (None, None))
-        it["created_by"] = umap.get(cb)
-        it["payer"] = umap.get(pay)
+        it["created_by"] = umap.get(owners.get((it["type"], it["id"])))
 
 
 def _badges(led) -> dict:
@@ -432,13 +416,20 @@ def _badges(led) -> dict:
                  "quality": s.quality, "kind": s.kind, "anomaly": s.anomaly, "tag": s.tag, "excluded": s.excluded,
                  "per_day": round(s.amount / s.days, 2) if s.kind == "idle" and s.amount and s.days > 0 else None}
             out.setdefault(s.end_id, []).append(d)
+    # 综合段只在有异常时出徽章，数值用折合油耗
+    for s in led.combined_segments:
+        if s.anomaly:
+            v = equiv_per100(s, led.params.kwh_per_l)
+            out.setdefault(s.end_id, []).append({"energy": "combined", "per100": round(v, 2) if v is not None else None,
+                                                 "quality": s.quality, "kind": s.kind, "anomaly": s.anomaly,
+                                                 "tag": s.tag, "excluded": s.excluded, "per_day": None})
     return out
 
 
 @router.get("/records/prefill")
 def prefill(vehicle_id: int, kind: Literal["fuel", "charge", "snapshot"] = "fuel",
             user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """表单预填：上次里程、同类上一条（「同上次」用）、常用地点排序、k、日均里程。"""
+    """表单预填：上次里程和里程时间轴、同类上一条（「同上次」用）、常用地点排序、k、日均里程。"""
     v, _ = require_vehicle(db, user, vehicle_id)
     led = load_ledger(db, v)
     obs = odo_observations(led, load_expenses(db, v.id))
@@ -460,6 +451,8 @@ def prefill(vehicle_id: int, kind: Literal["fuel", "charge", "snapshot"] = "fuel
     return {
         "last_odo": latest_odo_of(obs, v),
         "last_odo_ts": last_obs[0].isoformat(timespec="minutes") if last_obs else None,
+        # 按时间排好的里程读数，补录时用来找所选时间前后的读数
+        "odo_points": [[t.isoformat(timespec="minutes"), o] for t, o in obs],
         "last": record_dict(last) if last else None,
         "last_soc": min(last_soc, 100) if last_soc is not None else None,
         "last_fuel_pct": min(last_fuel_pct, 100) if last_fuel_pct is not None else None,
@@ -511,9 +504,9 @@ def get_record(rid: int, user: User = Depends(get_current_user), db: Session = D
                 d = segment_dict(s, led.params.kwh_per_l)
                 d["explain"] = explain(led, s, v)
                 segs.append(d)
-    out = record_dict(r, users_map(db, [r.created_by, r.updated_by, r.payer_user_id]))
+    out = record_dict(r, users_map(db, [r.created_by, r.updated_by]))
     out["segments"] = segs
-    out["can_delete"] = can_delete_entity(role, user, r.created_by)
+    out["can_delete"] = can_delete_entity(role, user, r.created_by) and not v.is_archived
     out["can_edit"] = role in ("owner", "editor") and not v.is_archived
     return out
 

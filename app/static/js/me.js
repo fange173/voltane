@@ -1,8 +1,8 @@
 /* me.js — 我的：个人设置、常用地点、加入车辆、数据（导入导出、回收站）、管理后台 */
 import { icon } from "./icons.js";
 import { navigate } from "./router.js";
-import { refreshChrome, resetView, setNav, setTitle, view } from "./shell.js";
-import { CHARGE_LABEL, EXPENSE_LABEL, PLACE_KIND, currentVehicle, emit, gradeLabel, loadVehicles, payerEnabled, pref, savePref, setVehicle, state } from "./state.js";
+import { onLeave, refreshChrome, resetView, setNav, setTitle, view } from "./shell.js";
+import { CHARGE_LABEL, EXPENSE_LABEL, PLACE_KIND, currentVehicle, emit, gradeLabel, loadVehicles, pref, savePref, setVehicle, state } from "./state.js";
 import { itemRow } from "./records.js";
 import { avatar, bindSegmented, confirmDialog, emptyState, promptDialog, setLoading, sheet, skeleton, switchRow, toast, toastError } from "./ui.js";
 import { $, $$, api, esc, fmtDate, html, money, num, raw, toNum } from "./util.js";
@@ -29,7 +29,6 @@ export function mePage() {
     <div class="section-title"><span>显示</span></div>
     <div class="card">
       <div class="field"><label>主题</label><div class="segmented" id="theme-seg">${[["auto", "跟随系统"], ["light", "浅色"], ["dark", "深色"]].map(([k, l]) => html`<button data-v="${k}" class="${pref("theme", "auto") === k ? "on" : ""}">${l}</button>`)}</div></div>
-      ${switchRow("show_payer", "启用「付款人」", payerEnabled(), "默认关闭；多人共用一辆车、需要分摊花费时再打开")}
       ${switchRow("place_top", "地点默认选中最常用的", pref("place_default", "none") === "top", "关闭时默认「不记录」")}
       ${switchRow("show_history", "首页显示「提车至今」卡片", !pref("hide_history", false))}
     </div>
@@ -54,7 +53,6 @@ export function mePage() {
     savePref("theme", t);
     applyTheme(t);
   });
-  el.querySelector("[name=show_payer]").onchange = (e) => savePref("show_payer", e.target.checked);
   el.querySelector("[name=place_top]").onchange = (e) => savePref("place_default", e.target.checked ? "top" : "none");
   el.querySelector("[name=show_history]").onchange = (e) => savePref("hide_history", !e.target.checked);
   $$("[data-vid]", el).forEach((b) => b.addEventListener("click", () => {
@@ -177,6 +175,8 @@ export async function placesPage() {
   setNav("me");
   setTitle("常用地点");
   const el = view();
+  // 点击处理挂在共用的 #view 上，离开页面时要摘掉，否则会带到其他页面
+  onLeave(() => (el.onclick = null));
   const v = currentVehicle();
   el.innerHTML = String(skeleton(3, 64));
   const load = async () => {
@@ -359,6 +359,8 @@ export async function adminPage() {
   setNav("me");
   setTitle("管理后台");
   const el = view();
+  // 点击处理挂在共用的 #view 上，离开页面时要摘掉，否则会带到其他页面
+  onLeave(() => (el.onclick = null));
   if (!state.user.is_admin) return navigate("/me");
   el.innerHTML = String(skeleton(3, 100));
   const load = async () => {

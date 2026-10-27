@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import DismissedHint, Record, User, Vehicle, localnow
 from app.engine.aggregate import ledger_start_index, odo_observations
-from app.engine.ledger import Ledger, Point
+from app.engine.ledger import Ledger, Point, equiv_per100
 from app.engine.types import Segment
 from app.services import fmt_num, fuel_level_text, load_expenses, load_ledger
 
@@ -32,6 +32,7 @@ ANOMALY_TEXT = {
     "high": "能耗明显偏高",
     "low": "能耗明显偏低，可能漏记了补能",
     "parked": "疑似长时间停放耗电",
+    "idle_high": "停车耗电明显偏高，检查哨兵、空调等是否忘关",
 }
 
 
@@ -48,17 +49,23 @@ def pending_items(db: Session, v: Vehicle, user: User, led: Optional[Ledger] = N
         else:
             text = f"疑似漏记一次加油（油量 {fuel_level_text(h.from_value, v)} → {fuel_level_text(h.to_value, v)}）"
         out.append({"key": h.key, "type": h.kind, "after_id": h.after_id, "before_id": h.before_id, "text": text})
-    for energy, segs in (("elec", led.elec_segments), ("fuel", led.fuel_segments)):
+    for energy, segs in (("elec", led.elec_segments), ("fuel", led.fuel_segments), ("combined", led.combined_segments)):
         for s in segs:
             if not s.anomaly:
                 continue
             key = f"anomaly:{energy}:{s.end_id}"
             if key in dismissed:
                 continue
-            unit = "kWh" if energy == "elec" else "L"
+            if s.anomaly == "idle_high":
+                value = f"日均 {fmt_num(s.amount / s.days)} kWh"
+            elif energy == "combined":
+                value = f"折合 {fmt_num(equiv_per100(s, led.params.kwh_per_l))} L/100km"
+            else:
+                value = f"{fmt_num(s.per100)} {'kWh' if energy == 'elec' else 'L'}/100km"
+            label = ("综合" if energy == "combined" else "") + ANOMALY_TEXT[s.anomaly]
             out.append({
                 "key": key, "type": "anomaly", "anomaly": s.anomaly, "energy": energy, "end_id": s.end_id,
-                "text": f"{s.end_ts:%m-%d} 这段{ANOMALY_TEXT[s.anomaly]}（{fmt_num(s.per100)} {unit}/100km）",
+                "text": f"{s.end_ts:%m-%d} 这段{label}（{value}）",
             })
     return out
 

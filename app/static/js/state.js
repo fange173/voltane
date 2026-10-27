@@ -98,8 +98,6 @@ export async function savePref(key, value) {
   }
 }
 export const pref = (key, d) => state.user?.settings?.[key] ?? d;
-/** 付款人功能默认关闭，在「我的」里打开后才显示和统计。 */
-export const payerEnabled = () => pref("show_payer", false) === true;
 
 /* 事件：data-changed（记录增删改后刷新视图）、vehicle-changed */
 const bus = new EventTarget();

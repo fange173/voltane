@@ -134,6 +134,9 @@ async function openReminder(r) {
   });
 }
 
+/** 按里程跟踪的提醒（带到期里程或里程周期）；只按日期的提醒（保险、年检等）不显示里程输入。 */
+const byKm = (r) => r.interval_km != null || r.due_odometer_km != null;
+
 function completeReminder(r) {
   const cat = { insurance: "insurance", inspection: "inspection", tires: "tires", battery_12v: "repair", loan: "loan" }[r.template_key] || "maintenance";
   sheet({
@@ -141,7 +144,7 @@ function completeReminder(r) {
     render(body, ctx) {
       body.innerHTML = String(html`<div class="stack">
         <div class="grid-2"><div class="field"><label>完成日期</label><input class="input" type="date" name="d" value="${todayISO()}"></div>
-          <div class="field"><label>当时里程</label><div class="input-wrap"><input class="input num" name="o" inputmode="numeric" value="${r.current_odo != null ? Math.round(r.current_odo) : ""}"><span class="unit">km</span></div></div></div>
+          ${byKm(r) ? html`<div class="field"><label>当时里程</label><div class="input-wrap"><input class="input num" name="o" inputmode="numeric" value="${r.current_odo != null ? Math.round(r.current_odo) : ""}"><span class="unit">km</span></div></div>` : ""}</div>
         ${r.vehicle_id ? html`<div class="field"><label>顺手记一笔${EXPENSE_LABEL[cat]}费用（可选）</label><div class="input-wrap"><input class="input num" name="c" inputmode="text" placeholder="0.00"><span class="unit">元</span></div></div>
           <div class="field"><label>商家（可选）</label><input class="input" name="vendor"></div>` : ""}
         <p class="tiny muted">${r.interval_months || r.interval_km ? "会以这次完成的日期和里程为基准顺延到下一次" : "这是一次性提醒，完成后会停用"}</p>
@@ -151,7 +154,7 @@ function completeReminder(r) {
         setLoading(e.currentTarget, true);
         try {
           const res = await api(`/api/reminders/${r.id}/complete`, { method: "POST", body: {
-            done_at: $("[name=d]", body).value, odometer_km: toNum($("[name=o]", body).value),
+            done_at: $("[name=d]", body).value, odometer_km: toNum($("[name=o]", body)?.value),
             expense_cents: $("[name=c]", body) ? yuanToCents($("[name=c]", body).value) : null,
             expense_category: cat, vendor: $("[name=vendor]", body)?.value || "",
           } });
@@ -199,6 +202,7 @@ function editReminder(r, tpl = null) {
     interval_km: v && ["ice", "hev"].includes(v.energy_type) && tpl.ice_km ? tpl.ice_km : tpl.interval_km ?? null,
     lead_days: tpl.lead_days ?? 30, lead_km: tpl.lead_km ?? 500, personal: !!tpl.personal, is_active: true,
   };
+  const withKm = base.template_key === "custom" || byKm(base);
   sheet({
     title: isNew ? "新建提醒" : "编辑提醒",
     render(body, ctx) {
@@ -206,19 +210,19 @@ function editReminder(r, tpl = null) {
         ${tpl?.hint ? html`<p class="callout small">${raw(icon("info", 16))}${tpl.hint}</p>` : ""}
         <div class="field"><label>名称</label><input class="input" name="title" value="${base.title}" maxlength="64" placeholder="如：更换机油"></div>
         <div class="grid-2"><div class="field"><label>到期日期</label><input class="input" type="date" name="due_date" value="${base.due_date || ""}"></div>
-          <div class="field"><label>到期里程</label><div class="input-wrap"><input class="input num" name="due_odometer_km" inputmode="numeric" value="${base.due_odometer_km ?? ""}" placeholder="可不填"><span class="unit">km</span></div></div></div>
+          ${withKm ? html`<div class="field"><label>到期里程</label><div class="input-wrap"><input class="input num" name="due_odometer_km" inputmode="numeric" value="${base.due_odometer_km ?? ""}" placeholder="可不填"><span class="unit">km</span></div></div>` : ""}</div>
         <div class="grid-2"><div class="field"><label>每隔几个月</label><div class="input-wrap"><input class="input num" name="interval_months" inputmode="numeric" value="${base.interval_months ?? ""}" placeholder="一次性"><span class="unit">月</span></div></div>
-          <div class="field"><label>每隔多少公里</label><div class="input-wrap"><input class="input num" name="interval_km" inputmode="numeric" value="${base.interval_km ?? ""}" placeholder="可不填"><span class="unit">km</span></div></div></div>
+          ${withKm ? html`<div class="field"><label>每隔多少公里</label><div class="input-wrap"><input class="input num" name="interval_km" inputmode="numeric" value="${base.interval_km ?? ""}" placeholder="可不填"><span class="unit">km</span></div></div>` : ""}</div>
         <div class="grid-2"><div class="field"><label>提前几天提醒</label><div class="input-wrap"><input class="input num" name="lead_days" inputmode="numeric" value="${base.lead_days}"><span class="unit">天</span></div></div>
-          <div class="field"><label>提前多少公里</label><div class="input-wrap"><input class="input num" name="lead_km" inputmode="numeric" value="${base.lead_km}"><span class="unit">km</span></div></div></div>
-        <p class="tiny muted">日期和里程都填时，哪个先到算哪个；按里程的提醒会用最近的日均里程估算到期日。周期是常见值，请按保养手册修改。</p>
+          ${withKm ? html`<div class="field"><label>提前多少公里</label><div class="input-wrap"><input class="input num" name="lead_km" inputmode="numeric" value="${base.lead_km}"><span class="unit">km</span></div></div>` : ""}</div>
+        <p class="tiny muted">${withKm ? "日期和里程都填时，哪个先到算哪个；按里程的提醒会用最近的日均里程估算到期日。" : ""}周期是常见值，请按实际情况修改。</p>
         ${isNew && v ? switchRow("personal", "只提醒我自己（不属于这辆车）", base.personal, "如驾驶证换证") : ""}
         ${!isNew ? switchRow("is_active", "启用", base.is_active) : ""}
         <div class="field"><label>备注</label><input class="input" name="note" value="${base.note || ""}" maxlength="200"></div>
         <div class="form-error"></div></form>`);
       // 到期里程不替用户猜，只提示当前里程
       const curOdo = state.vehicles.find((x) => x.id === (r ? r.vehicle_id : v?.id))?.latest_odo;
-      if (curOdo) $("[name=due_odometer_km]", body).placeholder = `当前 ${km(curOdo)}`;
+      if (curOdo && withKm) $("[name=due_odometer_km]", body).placeholder = `当前 ${km(curOdo)}`;
       ctx.setFoot(`<button class="btn btn-primary grow" data-ok>${icon("check", 18)}保存</button>`);
       $("[data-ok]", ctx.foot).onclick = async (e) => {
         const f = $("form", body);
@@ -226,9 +230,9 @@ function editReminder(r, tpl = null) {
         const payload = {
           vehicle_id: personal ? null : r ? r.vehicle_id : v?.id,
           title: f.title.value.trim(), template_key: base.template_key || "custom",
-          due_date: f.due_date.value || null, due_odometer_km: toNum(f.due_odometer_km.value),
-          interval_months: toNum(f.interval_months.value), interval_km: toNum(f.interval_km.value),
-          lead_days: toNum(f.lead_days.value) ?? 30, lead_km: toNum(f.lead_km.value) ?? 500,
+          due_date: f.due_date.value || null, due_odometer_km: withKm ? toNum(f.due_odometer_km.value) : null,
+          interval_months: toNum(f.interval_months.value), interval_km: withKm ? toNum(f.interval_km.value) : null,
+          lead_days: toNum(f.lead_days.value) ?? 30, lead_km: (withKm ? toNum(f.lead_km.value) : base.lead_km) ?? 500,
           last_done_at: r?.last_done_at || null, last_done_odometer_km: r?.last_done_odometer_km ?? null,
           is_active: f.is_active ? f.is_active.checked : true, note: f.note.value.trim(),
         };

@@ -15,15 +15,16 @@
   right: 10px;
   font-size: 11px;
 }
+/* 由其他字段算出的只读值（如充电单价） */
+.input.derived {
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1.5px dashed var(--fg-faint);
+  cursor: default;
+}
 .triple .auto-tag {
   right: 6px;
   top: -9px;
-}
-.discount {
-  min-height: 46px;
-  display: flex;
-  align-items: center;
-  padding: 0 4px;
 }
 .mini-check {
   display: inline-flex;
@@ -250,4 +251,29 @@ details.more .input {
   .tariff-row .input-wrap {
     grid-column: 1 / 4;
   }
+}
+
+/* 油量单位切换：按升输入时隐藏百分比滑块 */
+.unit-toggle {
+  display: inline-flex;
+  margin-left: 8px;
+  border: 1px solid var(--fg-faint);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.unit-toggle button {
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: none;
+  border: 0;
+}
+.level-field:not(.unit-liters) .unit-toggle [data-unit="pct"],
+.level-field.unit-liters .unit-toggle [data-unit="liters"] {
+  background: var(--fuel);
+  color: #fff;
+}
+.level-field.unit-liters .level-row,
+.level-field:not(.unit-liters) .lit-wrap {
+  display: none;
 }

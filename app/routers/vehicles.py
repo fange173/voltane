@@ -9,13 +9,13 @@ from datetime import date, datetime, timedelta
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.access import ROLE_LABEL, owner_count, require_vehicle
 from app.auth import get_current_user, user_brief
-from app.constants import TEMPLATE_BY_KEY
+from app.constants import TEMPLATE_BY_KEY, norm_charge_type
 from app.database import (
     ActivityLog,
     DismissedHint,
@@ -60,6 +60,11 @@ class VehicleIn(BaseModel):
     purchase_price_cents: Optional[int] = Field(None, ge=0)
     color: str = Field("#4F46E5", max_length=16)
     calc_settings: dict = Field(default_factory=dict)
+
+    @field_validator("default_charge_type")
+    @classmethod
+    def _ct(cls, v):
+        return norm_charge_type(v)
 
 
 class StartIn(BaseModel):
@@ -192,10 +197,10 @@ def create_vehicle(body: VehicleCreateIn, user: User = Depends(get_current_user)
         if has_fuel and st.delivery_fill_l:
             db.add(Record(vehicle_id=v.id, kind="fuel", occurred_at=dts + timedelta(minutes=1), odometer_km=dodo,
                           fuel_liters=st.delivery_fill_l, fuel_grade=v.default_fuel_grade,
-                          paid_cents=st.delivery_fill_cents, amount_cents=st.delivery_fill_cents,
+                          amount_cents=st.delivery_fill_cents,
                           fuel_unit_price=round(st.delivery_fill_cents / 100 / st.delivery_fill_l, 2)
                           if st.delivery_fill_cents else None,
-                          fuel_is_full=False, created_by=user.id, updated_by=user.id, payer_user_id=user.id,
+                          fuel_is_full=False, created_by=user.id, updated_by=user.id,
                           note="提车时加油"))
     if st and st.mode == "existing" and body.summary and _summary_has_data(body.summary):
         s_ = body.summary
@@ -525,10 +530,10 @@ def fix_missed(vid: int, body: FixMissedIn, user: User = Depends(get_current_use
     est = ["odometer_km", "paid_cents", "charge_kwh" if energy == "elec" else "fuel_l"]
     r = Record(vehicle_id=vid, kind=body.kind, occurred_at=mid.replace(second=0, microsecond=0), odometer_km=None,
                odometer_estimated=True, source="auto_fix", estimated_fields=json.dumps(est),
-               paid_cents=cents, amount_cents=cents, created_by=user.id, updated_by=user.id,
-               payer_user_id=user.id, note="自动补录（疑似漏记）")
+               amount_cents=cents, created_by=user.id, updated_by=user.id,
+               note="自动补录（疑似漏记）")
     if energy == "elec":
-        r.charge_kwh, r.charge_type, r.charge_unit_price = qty, v.default_charge_type, round(price, 3)
+        r.charge_kwh, r.charge_type, r.charge_unit_price = qty, norm_charge_type(v.default_charge_type), round(price, 3)
     else:
         r.fuel_liters, r.fuel_grade, r.fuel_unit_price = qty, v.default_fuel_grade, round(price, 2)
     db.add(r)

@@ -63,7 +63,7 @@ def seed_phev(db, admin: User, today: date) -> None:
     start = today - timedelta(days=120)
 
     def add(**kw):
-        r = Record(vehicle_id=v.id, created_by=admin.id, updated_by=admin.id, payer_user_id=admin.id, **kw)
+        r = Record(vehicle_id=v.id, created_by=admin.id, updated_by=admin.id, **kw)
         db.add(r)
         return r
 
@@ -71,7 +71,7 @@ def seed_phev(db, admin: User, today: date) -> None:
     add(kind="snapshot", occurred_at=dts, odometer_km=12, snapshot_tag="delivery",
         fuel_level_before_pct=round(5 / 48 * 100, 2), estimated_fields='["fuel_before_pct"]', note=TAG + " 提车")
     add(kind="fuel", occurred_at=dts + timedelta(minutes=1), odometer_km=12, fuel_liters=30, fuel_grade="92",
-        paid_cents=22500, amount_cents=22500, fuel_unit_price=7.5, note=TAG + " 提车时加油")
+        amount_cents=22500, fuel_unit_price=7.5, note=TAG + " 提车时加油")
     db.add(PeriodSummary(vehicle_id=v.id, start_date=ddate + timedelta(days=1), end_date=start - timedelta(days=1),
                          mode="extra", fuel_cents=30000, fuel_price=7.6, elec_kwh=1250, elec_cents=45500,
                          note=TAG + " 历史汇总", created_by=admin.id))
@@ -113,10 +113,9 @@ def seed_phev(db, admin: User, today: date) -> None:
         if fuel < 0.25 * 48:
             liters = round(48 - fuel, 2)
             price = round(7.45 + rnd.uniform(0, 0.35), 2)
-            paid = round(liters * price * 100) - (1000 if rnd.random() < 0.4 else 0)
             add(kind="fuel", occurred_at=datetime.combine(day, datetime.min.time()).replace(hour=19, minute=10),
                 odometer_km=round(odo), fuel_liters=liters, fuel_unit_price=price, fuel_grade="92", fuel_is_full=True,
-                amount_cents=round(liters * price * 100), paid_cents=paid, soc_before_pct=round(max(soc, 5)),
+                amount_cents=round(liters * price * 100), soc_before_pct=round(max(soc, 5)),
                 place_id=gas.id, place_name=gas.name, note=TAG)
             fuel = 48
         # 充电：晚上回家电量低于 45% 充到 100%；偶尔公司充
@@ -128,14 +127,14 @@ def seed_phev(db, admin: User, today: date) -> None:
             price = 1.2 if public else 0.3
             cents = round(kwh * price * 100)
             add(kind="charge", occurred_at=t, odometer_km=round(odo), soc_before_pct=s0, soc_after_pct=100, charge_kwh=kwh,
-                charge_type="public_ac" if public else "home", charge_unit_price=price, paid_cents=cents, amount_cents=cents,
+                charge_type="public_ac" if public else "home", charge_unit_price=price, amount_cents=cents,
                 charge_minutes=int(kwh / 3.3 * 60), place_id=(pub if public else home).id,
                 place_name=(pub if public else home).name, extra_fee_cents=500 if public and rnd.random() < 0.5 else None,
                 note=TAG)
             soc = 100
     # 费用与提醒
     def exp(days_ago, cat, cents, **kw):
-        db.add(Expense(vehicle_id=v.id, category=cat, amount_cents=cents, created_by=admin.id, payer_user_id=admin.id,
+        db.add(Expense(vehicle_id=v.id, category=cat, amount_cents=cents, created_by=admin.id,
                        occurred_at=datetime.combine(today - timedelta(days=days_ago), datetime.min.time()).replace(hour=11),
                        note=kw.pop("note", TAG), **kw))
 
@@ -189,8 +188,8 @@ def seed_bev(db, admin: User, today: date) -> None:
             cents = round(kwh * price * 100)
             db.add(Record(vehicle_id=v.id, kind="charge", occurred_at=datetime.combine(day, datetime.min.time()).replace(hour=21),
                           odometer_km=round(odo), soc_before_pct=s0, soc_after_pct=target, charge_kwh=kwh,
-                          charge_type="dc" if dc else "home", charge_unit_price=price, paid_cents=cents, amount_cents=cents,
-                          place_name="超充站" if dc else "小区充电桩", created_by=admin.id, payer_user_id=admin.id, note=TAG))
+                          charge_type="dc" if dc else "home", charge_unit_price=price, amount_cents=cents,
+                          place_name="超充站" if dc else "小区充电桩", created_by=admin.id, note=TAG))
             soc = target
 
 

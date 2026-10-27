@@ -139,5 +139,25 @@ def test_health_has_version_fields(_app):
 
 def test_legacy_super_charge_type_is_stored_as_dc(vehicle):
     r = vehicle.post("/api/records", json={"vehicle_id": vehicle.vid, "kind": "charge", "occurred_at": "2026-09-01T08:00",
-                                           "odometer_km": 100, "charge_type": "super", "charge_kwh": 10, "paid_cents": 1000})
+                                           "odometer_km": 100, "charge_type": "super", "charge_kwh": 10, "amount_cents": 1000})
     assert r.status_code == 200 and r.json()["record"]["charge_type"] == "dc"
+
+
+def test_paid_and_payer_are_gone(vehicle):
+    from sqlalchemy import create_engine, text
+
+    from app.database import Record, _migrate_v2
+
+    assert "paid_cents" not in Record.__table__.columns and "payer_user_id" not in Record.__table__.columns
+    r = vehicle.post("/api/records", json={"vehicle_id": vehicle.vid, "kind": "fuel", "occurred_at": "2026-09-01T08:00",
+                                           "odometer_km": 100, "fuel_liters": 10, "amount_cents": 7500, "paid_cents": 1, "payer_user_id": 1})
+    rec = r.json()["record"]
+    assert rec["amount_cents"] == 7500 and "paid_cents" not in rec and "payer" not in rec and "payer_user_id" not in rec
+    # 旧库：实付并入金额，旧列保留
+    eng = create_engine("sqlite://")
+    with eng.begin() as c:
+        c.execute(text("CREATE TABLE records (id INTEGER, amount_cents INTEGER, paid_cents INTEGER)"))
+        c.execute(text("INSERT INTO records VALUES (1, 1000, 800), (2, NULL, 500), (3, 700, NULL)"))
+        _migrate_v2(c)
+        rows = c.execute(text("SELECT id, amount_cents, paid_cents FROM records ORDER BY id")).all()
+    assert rows == [(1, 800, 800), (2, 500, 500), (3, 700, None)]

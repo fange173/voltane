@@ -232,12 +232,12 @@ def main() -> None:
         # 保存响应样例（POST 也有契约）
         saved = d.send("POST", "/api/records", {
             "vehicle_id": phev, "kind": "fuel", "occurred_at": today.strftime("%Y-%m-%dT") + "09:00",
-            "odometer_km": 100100, "fuel_liters": 20, "fuel_unit_price": 7.5, "amount_cents": 15000, "paid_cents": 15000,
+            "odometer_km": 100100, "fuel_liters": 20, "fuel_unit_price": 7.5, "amount_cents": 15000,
             "fuel_is_full": True, "client_id": "fixture-save-1", "note": "[demo] 样例"})
         save("records_create", "fuel_ok", "POST", "/api/records", None, saved)
         replay = d.send("POST", "/api/records", {
             "vehicle_id": phev, "kind": "fuel", "occurred_at": today.strftime("%Y-%m-%dT") + "09:00",
-            "odometer_km": 100100, "fuel_liters": 20, "fuel_unit_price": 7.5, "amount_cents": 15000, "paid_cents": 15000,
+            "odometer_km": 100100, "fuel_liters": 20, "fuel_unit_price": 7.5, "amount_cents": 15000,
             "fuel_is_full": True, "client_id": "fixture-save-1", "note": "[demo] 样例"})
         save("records_create", "fuel_replayed", "POST", "/api/records", None, replay)
 
@@ -256,7 +256,7 @@ def main() -> None:
             "odometer_km": 1, "fuel_liters": 10})
         dup_body = {"vehicle_id": phev, "kind": "fuel", "occurred_at": today.strftime("%Y-%m-%dT") + "09:05",
                     "odometer_km": 100100, "fuel_liters": 20, "fuel_unit_price": 7.5, "amount_cents": 15000,
-                    "paid_cents": 15000, "fuel_is_full": True}
+                    "fuel_is_full": True}
         errors["409_duplicate"] = d.send("POST", "/api/records", dup_body)
         rec = saved.json()["record"]
         upd = {"vehicle_id": phev, "kind": "fuel", "occurred_at": rec["occurred_at"], "odometer_km": 100101,

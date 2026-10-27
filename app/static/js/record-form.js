@@ -10,8 +10,8 @@ import {
   currentVehicle,
   emit,
   gradeLabel,
-  payerEnabled,
   pref,
+  savePref,
   state,
 } from "./state.js";
 import { bindChips, confirmDialog, setLoading, sheet, toast, toastError } from "./ui.js";
@@ -38,7 +38,6 @@ import {
 } from "./util.js";
 
 const KIND_TITLE = { fuel: "加油", charge: "充电", snapshot: "状态快照", expense: "记一笔" };
-const membersCache = new Map();
 // 自动推算的字段 → 引擎里的估算字段名
 const EST_NAME = {
   fuel_liters: "fuel_l",
@@ -48,17 +47,6 @@ const EST_NAME = {
   soc_after_pct: "soc_after",
   soc_before_pct: "soc_before",
 };
-
-async function members(vid) {
-  if (!membersCache.has(vid)) {
-    try {
-      membersCache.set(vid, await api(`/api/vehicles/${vid}/members`));
-    } catch {
-      return [];
-    }
-  }
-  return membersCache.get(vid);
-}
 
 /* ---------- 字段渲染 ---------- */
 
@@ -83,12 +71,19 @@ function gaugeField(name, label, v) {
       <div class="bars">${Array.from({ length: n }, (_, i) => raw(`<button type="button" data-b="${i + 1}"></button>`))}</div>
       <input type="hidden" name="${name}"><span class="hint">点格子：亮了几格就点第几格，再点一次清除</span></div>`;
   }
-  if (v.fuel_gauge_mode === "liters" && v.tank_capacity_l) {
-    return html`<div class="field" data-f="${name}" data-liters="1" data-tank="${v.tank_capacity_l}"><label>${label}</label>
-      <div class="input-wrap"><input class="input num" data-lit inputmode="decimal" placeholder="仪表显示的剩余升数"><span class="unit">L</span></div>
-      <input type="hidden" name="${name}"></div>`;
-  }
-  return levelField(name, label, { tone: "fuel" });
+  if (!v.tank_capacity_l) return levelField(name, label, { tone: "fuel" });
+  // 知道油箱容积时可以在百分比和升之间切换，存的始终是百分比
+  const unit = fuelUnit(v);
+  return html`<div class="field level-field ${unit === "liters" ? "unit-liters" : ""}" data-f="${name}" data-tone="fuel" data-liters="1" data-tank="${v.tank_capacity_l}">
+    <label>${label}<span class="lv-val num"></span><span class="unit-toggle"><button type="button" data-unit="pct">%</button><button type="button" data-unit="liters">L</button></span></label>
+    <div class="level-row"><input type="range" min="0" max="100" step="5" value="0" class="lv-range unset" aria-label="${label}">
+      <div class="input-wrap lv-num"><input class="input num" name="${name}" inputmode="decimal" placeholder="–"><span class="auto-tag hidden">自动</span><span class="unit">%</span></div></div>
+    <div class="input-wrap lit-wrap"><input class="input num" data-lit inputmode="decimal" placeholder="仪表显示的剩余升数"><span class="unit">L</span></div></div>`;
+}
+
+/** 油量输入单位：上次在表单里选的，没选过按车辆的油表显示方式。 */
+function fuelUnit(v) {
+  return pref("fuel_unit", v.fuel_gauge_mode === "liters" ? "liters" : "pct");
 }
 
 function placeChips(places, kind) {
@@ -100,7 +95,8 @@ function placeChips(places, kind) {
       <button type="button" class="chip sm on" data-v="">不记录</button>
       ${top.map((p) => html`<button type="button" class="chip sm" data-v="${p.id}" data-name="${p.name}">${raw(icon(p.kind === "home_charger" ? "home" : p.kind === "gas_station" ? "fuel" : p.kind === "charge_station" ? "bolt" : "pin", 14))}${p.name}</button>`)}
       <button type="button" class="chip sm" data-v="__other">${raw(icon("plus", 14))}其他…</button>
-    </div></div>`;
+    </div>
+    <div class="place-save hidden"><button type="button" class="link-btn tiny" data-save-place></button></div></div>`;
 }
 
 function timeField(value) {
@@ -129,10 +125,10 @@ function moneyTriple(kind) {
   const p = kind === "fuel" ? "fuel_unit_price" : "charge_unit_price";
   return html`<div class="grid-3 triple">
     ${numField(q, kind === "fuel" ? "加油量" : "充电量", kind === "fuel" ? "L" : "kWh")}
-    ${numField(p, "单价", kind === "fuel" ? "元/L" : "元/度")}
-    ${numField("amount", "金额", "元", { mode: "text" })}
-  </div>
-  <div class="grid-2">${numField("paid", "实付", "元", { mode: "text", hint: "" })}<div class="field"><label>优惠</label><div class="discount num muted">–</div></div></div>`;
+    ${numField("amount", "花费金额", "元", { mode: "text" })}
+    ${kind === "fuel" ? numField(p, "单价", "元/L") : html`<div class="field" data-f="${p}"><label>单价</label>
+      <div class="input-wrap"><input class="input num derived" name="${p}" readonly tabindex="-1" placeholder="自动计算"><span class="unit">元/度</span></div></div>`}
+  </div>`;
 }
 
 /* ---------- 主入口 ---------- */
@@ -199,13 +195,11 @@ async function renderForm(body, ctx, v, st, { record, finish = false, keep = nul
       if (e.status !== 0) toastError(e);
     }
   }
-  const mems = await members(v.id);
-  const showPayer = mems.length > 1 && payerEnabled();
   const time = record?.occurred_at || keep?.occurred_at || localISO();
   const detailed = v.record_style !== "simple";
 
   if (kind === "expense") {
-    renderExpense(form, ctx, v, st, { record, mems, showPayer, time, keep, preset });
+    renderExpense(form, ctx, v, st, { record, time, keep, preset });
     return;
   }
 
@@ -224,7 +218,7 @@ async function renderForm(body, ctx, v, st, { record, finish = false, keep = nul
 
   form.innerHTML = String(html`
     ${kind === "charge" && !record ? html`<div class="callout" data-start-charge>${raw(icon("plug", 18))}<span class="grow">正在充电？先记开始，拔枪时再补结束</span><button type="button" class="btn btn-sm btn-soft">开始充电</button></div>` : ""}
-    ${kind === "snapshot" ? html`<p class="hint-text">${raw(icon("info", 16))}出发前、长时间停车前后记一下，可以把哨兵等静置耗电单独统计出来。</p>` : ""}
+    ${kind === "snapshot" ? html`<p class="hint-text">${raw(icon("info", 16))}出发前、长时间停车前后记一下，可以把哨兵等静置耗电单独统计出来。电量和油量记得哪个填哪个，不确定的留空。</p>` : ""}
     ${!record && p?.last ? html`<div class="row between"><span class="tiny muted">上次：${fmtDate(p.last.occurred_at)} ${p.last.place_name || ""}</span><button type="button" class="link-btn tiny" data-same>${raw(icon("copy", 14))} 同上次</button></div>` : ""}
     ${timeField(time)}
     ${odoField(p)}
@@ -248,7 +242,6 @@ async function renderForm(body, ctx, v, st, { record, finish = false, keep = nul
       ${kind === "charge" ? html`<div class="grid-3">${numField("charge_minutes", "时长", "分钟", { mode: "numeric" })}${numField("energy_fee", "电费", "元", { mode: "text" })}${numField("service_fee", "服务费", "元", { mode: "text" })}</div>
         ${numField("extra_fee", "占位/停车费", "元", { mode: "text", hint: "计入花费，不计入电价" })}` : ""}
       ${kind === "fuel" ? numField("extra_fee", "其他费用（洗车等）", "元", { mode: "text", hint: "计入花费，不计入油价" }) : ""}
-      ${showPayer ? html`<div class="field"><label>付款人</label><select class="input" name="payer_user_id">${mems.map((m) => html`<option value="${m.id}">${m.name}${m.is_me ? "（我）" : ""}</option>`)}</select></div>` : ""}
       ${kind !== "snapshot" ? html`<label class="switch"><span class="switch-text"><span>上次${kind === "fuel" ? "加油" : "充电"}没记</span><small>勾选后跨过这里的能耗不计算，避免算错</small></span><input type="checkbox" name="missed_before"><span class="track"></span></label>` : ""}
     </div></details>
     <div class="field"><label>备注</label>
@@ -323,22 +316,40 @@ function wireCommon(form, v, st) {
     });
   }
   $("[data-geo]", form)?.addEventListener("click", () => locate(form, v, st));
+  $("[data-save-place]", form)?.addEventListener("click", async (e) => {
+    const cur = st.place;
+    if (!cur || cur.id) return;
+    const kind = st.kind === "fuel" ? "gas_station" : form.dataset.charge_type === "home" ? "home_charger" : "charge_station";
+    setLoading(e.currentTarget, true);
+    try {
+      const pl = await api("/api/places", { method: "POST", body: { vehicle_id: v.id, shared: true, name: cur.name, kind,
+        default_charge_type: st.kind === "charge" ? form.dataset.charge_type || null : null,
+        default_fuel_grade: st.kind === "fuel" ? form.dataset.fuel_grade || null : null,
+        last_unit_price: toNum(form[st.kind === "fuel" ? "fuel_unit_price" : "charge_unit_price"]?.value) } });
+      st.prefill.places = [pl, ...(st.prefill.places || [])];
+      $(".chip.tmp", form)?.remove();
+      setPlace(form, v, st, pl);
+      toast("已存为常用地点");
+    } catch (ex) {
+      toastError(ex);
+    } finally {
+      setLoading(e.currentTarget, false);
+    }
+  });
   // 同上次
   $("[data-same]", form)?.addEventListener("click", () => {
     const l = st.prefill.last;
     if (!l) return;
     if (l.fuel_grade) selectChip(form, "[data-grade]", "fuel_grade", l.fuel_grade);
     if (l.charge_type) selectChip(form, "[data-ctype]", "charge_type", l.charge_type);
-    const price = l.fuel_unit_price ?? l.charge_unit_price;
-    const pname = st.kind === "fuel" ? "fuel_unit_price" : "charge_unit_price";
-    if (price != null && form[pname]) setUser(form[pname], price);
+    if (st.kind === "fuel" && l.fuel_unit_price != null) setUser(form.fuel_unit_price, l.fuel_unit_price);
     if (l.place_id) {
       const pl = st.prefill.places.find((p) => p.id === l.place_id);
       if (pl) setPlace(form, v, st, pl);
     } else if (l.place_name) setPlace(form, v, st, { id: null, name: l.place_name });
     if (st.kind === "fuel") form.fuel_is_full.checked = !!l.fuel_is_full;
     recompute(form, v, st);
-    toast("已复制上次的地点、方式和单价");
+    toast(st.kind === "fuel" ? "已复制上次的地点、标号和单价" : "已复制上次的地点和方式");
   });
   // 数字输入：记录用户手动改过的字段
   form.addEventListener("input", (e) => {
@@ -399,23 +410,30 @@ function wireLevels(form, v, st) {
   });
   $$("[data-liters]", form).forEach((f) => {
     const lit = $("[data-lit]", f);
-    const hidden = $("input[type=hidden]", f);
+    const pct = $("input[name]", f);
     lit.addEventListener("input", () => {
       const l = toNum(lit.value);
-      hidden.value = l == null ? "" : Math.min((l / v.tank_capacity_l) * 100, 100).toFixed(1);
-      hidden.dataset.user = hidden.value ? "1" : "";
-      delete hidden.dataset.auto;
+      pct.value = l == null ? "" : Math.min((l / v.tank_capacity_l) * 100, 100).toFixed(1);
+      pct.dataset.user = pct.value ? "1" : "";
+      clearAuto(pct);
       lit.classList.remove("auto");
-      unstick(st, hidden.name);
+      syncLevel(pct);
+      unstick(st, pct.name);
       recompute(form, v, st);
       saveDraft(form, v, st);
+    });
+    f.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-unit]");
+      if (!b) return;
+      $$("[data-liters]", form).forEach((x) => x.classList.toggle("unit-liters", b.dataset.unit === "liters"));
+      savePref("fuel_unit", b.dataset.unit);
     });
   });
 }
 
 /** 用户改了某个字段：去掉它的估算标记（含已保存记录带来的）。 */
 function unstick(st, fieldName) {
-  const n = EST_NAME[fieldName] || { amount: "paid_cents", paid: "paid_cents", odometer_km: "odometer_km" }[fieldName];
+  const n = EST_NAME[fieldName] || (fieldName === "odometer_km" ? "odometer_km" : null);
   if (!n) return;
   st.est.delete(n);
   st.estSticky.delete(n);
@@ -462,8 +480,9 @@ function syncLevel(inp) {
     r.style.setProperty("--p", (inp.value !== "" ? Math.min(+inp.value, 100) : 0) + "%");
   }
   const lf = inp.closest("[data-liters]");
-  if (lf && inp.type === "hidden") {
-    const lit = $("[data-lit]", lf);
+  const lit = lf && $("[data-lit]", lf);
+  // 正在输入的升数不回写，避免「3.」被改成「3」
+  if (lit && inp !== lit && document.activeElement !== lit) {
     const T = +lf.dataset.tank;
     lit.value = inp.value !== "" && T ? String(+((+inp.value / 100) * T).toFixed(1)) : "";
     lit.classList.toggle("auto", !!inp.dataset.auto);
@@ -477,7 +496,8 @@ function syncLevel(inp) {
   }
 }
 
-function setPlace(form, v, st, place) {
+/** 选中地点；用户主动选地点时带出默认方式、标号和单价，载入已保存的记录或草稿时（defaults: false）保持原值。 */
+function setPlace(form, v, st, place, { defaults = true } = {}) {
   st.place = place;
   const pc = $("[data-place-chips]", form);
   let chip = place?.id ? $(`.chip[data-v="${place.id}"]`, pc) : null;
@@ -497,12 +517,15 @@ function setPlace(form, v, st, place) {
     chip.onclick = (e) => e.stopPropagation();
     pc.insertBefore(chip, $('.chip[data-v="__other"]', pc));
   }
-  if (place?.id) {
+  const ps = $(".place-save", form);
+  if (ps) {
+    ps.classList.toggle("hidden", !place || !!place.id);
+    if (place && !place.id) $("[data-save-place]", ps).textContent = `存为常用地点「${place.name}」`;
+  }
+  if (place?.id && defaults) {
     if (st.kind === "charge" && place.default_charge_type) selectChip(form, "[data-ctype]", "charge_type", place.default_charge_type);
     if (st.kind === "fuel" && place.default_fuel_grade) selectChip(form, "[data-grade]", "fuel_grade", place.default_fuel_grade);
-    const pname = st.kind === "fuel" ? "fuel_unit_price" : "charge_unit_price";
-    const pinp = form[pname];
-    if (pinp && !pinp.dataset.user && place.last_unit_price && !place.tou_tariff?.length) setUser(pinp, place.last_unit_price);
+    if (st.kind === "fuel" && !form.fuel_unit_price.dataset.user && place.last_unit_price) setUser(form.fuel_unit_price, place.last_unit_price);
   }
   recompute(form, v, st);
 }
@@ -589,8 +612,7 @@ function applyDefaults(form, v, st, kind, keep, preset) {
       i.title = `上次记录后的电量 ${p.last_soc}%`;
     });
   }
-  if (form.payer_user_id) form.payer_user_id.value = state.user.id;
-  $$("[data-t]", form)[0]?.classList.add("on");
+    $$("[data-t]", form)[0]?.classList.add("on");
 }
 
 function fillRecord(form, v, st, r, finish) {
@@ -622,7 +644,6 @@ function fillRecord(form, v, st, r, finish) {
   if (r.kind === "charge") {
     selectChip(form, "[data-ctype]", "charge_type", r.charge_type || "home");
     put("charge_kwh", r.charge_kwh, "charge_kwh");
-    put("charge_unit_price", r.charge_unit_price);
     put("soc_after_pct", r.soc_after_pct, "soc_after");
     form.charge_to_limit.checked = !!r.charge_to_limit;
     put("charge_minutes", r.charge_minutes);
@@ -641,15 +662,13 @@ function fillRecord(form, v, st, r, finish) {
     put("fuel_level_before_pct", r.fuel_level_before_pct, "fuel_before_pct");
   }
   if (r.amount_cents != null && form.amount) setUser(form.amount, r.amount_cents / 100);
-  if (r.paid_cents != null && form.paid && r.paid_cents !== r.amount_cents) setUser(form.paid, r.paid_cents / 100);
   if (r.extra_fee_cents != null && form.extra_fee) setUser(form.extra_fee, r.extra_fee_cents / 100);
   if (form.missed_before) form.missed_before.checked = !!r.missed_before;
-  if (form.payer_user_id && r.payer_user_id) form.payer_user_id.value = r.payer_user_id;
-  form.note.value = r.note || "";
+    form.note.value = r.note || "";
   if (r.place_id || r.place_name) {
     const pl = st.prefill.places.find((p) => p.id === r.place_id) || { id: r.place_id, name: r.place_name };
     st.place = pl;
-    setPlace(form, v, st, pl);
+    setPlace(form, v, st, pl, { defaults: false });
   }
   st.lastEdited = ["fuel_liters", "charge_kwh", "fuel_unit_price", "charge_unit_price", "amount"].filter((n) => form[n]?.dataset.user);
 }
@@ -677,13 +696,13 @@ function restoreDraft(form, v, st) {
   if (!d || Date.now() - d.__ts > 24 * 3600 * 1000) return;
   const keys = Object.keys(d).filter((k) => !k.startsWith("__") && !k.startsWith("cb:") && k !== "occurred_at");
   if (!keys.length) return;
-  for (const k of keys) if (form[k]) setUser(form[k], d[k]);
+  for (const k of keys) if (form[k] && !form[k].readOnly) setUser(form[k], d[k]);
   for (const k of Object.keys(d).filter((x) => x.startsWith("cb:"))) if (form[k.slice(3)]) form[k.slice(3)].checked = d[k];
   for (const [k, val] of Object.entries(d.__ds || {})) {
     const sel = { fuel_grade: "[data-grade]", charge_type: "[data-ctype]", snapshot_tag: "[data-snap]" }[k];
     if (sel) selectChip(form, sel, k, val);
   }
-  if (d.__place) setPlace(form, v, st, d.__place);
+  if (d.__place) setPlace(form, v, st, d.__place, { defaults: false });
   toast("已恢复上次没保存的内容", {
     action: { label: "清空", onClick: () => {
       store.del(draftKey(v, st));
@@ -700,7 +719,7 @@ function restoreDraft(form, v, st) {
 function val(form, name) {
   const i = form[name];
   if (!i || i.disabled) return null;
-  if (name === "amount" || name === "paid" || name.endsWith("_fee")) return evalAmount(i.value);
+  if (name === "amount" || name.endsWith("_fee")) return evalAmount(i.value);
   return toNum(i.value);
 }
 const isUser = (form, name) => !!form[name]?.dataset.user;
@@ -747,7 +766,7 @@ function recompute(form, v, st) {
   const q = kind === "fuel" ? "fuel_liters" : "charge_kwh";
   const p = kind === "fuel" ? "fuel_unit_price" : "charge_unit_price";
   const ttt = (userOnly) => {
-    if (kind === "snapshot" || !form[q]) return;
+    if (kind !== "fuel" || !form[q]) return;
     const has = (n) => val(form, n) != null && (!userOnly || isUser(form, n));
     const vq = val(form, q);
     const vp = val(form, p);
@@ -763,7 +782,7 @@ function recompute(form, v, st) {
   // 3. 依据车辆参数推算
   if (kind === "fuel" && T) {
     // 按升或格数输入时百分比多保留两位，换算回升数才不会有偏差
-    const lvDigits = v.fuel_gauge_mode === "pct" ? 0 : 2;
+    const lvDigits = fuelUnit(v) === "pct" && v.fuel_gauge_mode !== "bars" ? 0 : 2;
     const full = form.fuel_is_full.checked;
     const before = val(form, "fuel_level_before_pct");
     const liters = val(form, "fuel_liters");
@@ -784,47 +803,45 @@ function recompute(form, v, st) {
   if (kind === "charge") {
     const swap = form.dataset.charge_type === "swap";
     const toLimit = form.charge_to_limit.checked;
-    if (toLimit && !isUser(form, "soc_after_pct")) setAuto(form.soc_after_pct, v.charge_limit_pct, 0);
+    // 充到上限：结束 SOC 固定为上限值，不能手改
+    const lockLimit = (on) => {
+      form.soc_after_pct.readOnly = on;
+      const rg = $(".lv-range", form.soc_after_pct.closest(".level-field"));
+      if (rg) rg.disabled = on;
+    };
+    if (toLimit) {
+      delete form.soc_after_pct.dataset.user;
+      setAuto(form.soc_after_pct, v.charge_limit_pct ?? 100, 0);
+    }
+    lockLimit(toLimit);
     const s0 = val(form, "soc_before_pct");
     const s1 = val(form, "soc_after_pct");
     const per = swap ? (v.battery_usable_kwh ? v.battery_usable_kwh / 100 : null) : k;
-    if (s0 != null && s1 != null && s1 > s0 && per && val(form, "charge_kwh") == null && !isUser(form, "charge_kwh")) {
-      setAuto(form.charge_kwh, (s1 - s0) * per, 1);
-      markEst("charge_kwh");
-    } else if (s0 != null && s1 == null && !toLimit && per && isUser(form, "charge_kwh")) {
+    if (s0 != null && s1 == null && !toLimit && per && isUser(form, "charge_kwh")) {
       setAuto(form.soc_after_pct, Math.min(100, s0 + val(form, "charge_kwh") / per), 0);
       markEst("soc_after_pct");
     }
-    // 峰谷电价
+    // 峰谷电价只给参考金额，不替用户填
     const note = $(".tariff-note", form);
     const tariff = st.place?.tou_tariff?.length ? st.place : null;
-    note.classList.toggle("hidden", !tariff);
     const kwh = val(form, "charge_kwh");
-    if (tariff && kwh && !isUser(form, "amount") && !isUser(form, "charge_unit_price")) {
-      const amt = tariffAmount(tariff, kwh, form.occurred_at.value, val(form, "charge_minutes"));
-      if (amt != null) {
-        setAuto(form.amount, amt, 2);
-        setAuto(form.charge_unit_price, amt / kwh, 3);
-        note.textContent = `已按「${tariff.name}」的峰谷电价自动计算金额`;
-      }
-    }
+    const ref = tariff && kwh ? tariffAmount(tariff, kwh, form.occurred_at.value, val(form, "charge_minutes")) : null;
+    note.classList.toggle("hidden", ref == null);
+    if (ref != null) note.textContent = `按「${tariff.name}」的峰谷电价约 ${money(Math.round(ref * 100))}`;
     // 电费 + 服务费
     const ef = val(form, "energy_fee");
     const sf = val(form, "service_fee");
     if ((ef != null || sf != null) && !isUser(form, "amount") && val(form, "amount") == null) setAuto(form.amount, (ef || 0) + (sf || 0), 2);
+    // 单价只由金额和电量算出；缺金额或电量的旧记录保留原来的单价
+    const amt = val(form, "amount");
+    const price = amt != null && kwh > 0 ? +(amt / kwh).toFixed(3) : st.record?.charge_unit_price ?? null;
+    form.charge_unit_price.value = price ?? "";
   }
 
   // 4. 再用自动值补齐三填二
   ttt(false);
 
   // 5. 实付、优惠、里程增量、显示值
-  const amount = val(form, "amount");
-  const paid = val(form, "paid");
-  if (form.paid) {
-    form.paid.placeholder = amount != null ? fixed(amount) : "";
-    const disc = $(".discount", form);
-    if (disc) disc.textContent = amount != null && paid != null && amount - paid > 0.005 ? "-¥" + fixed(amount - paid) : "–";
-  }
   updateOdoDelta(form, st);
   $$(".level-field", form).forEach((f) => {
     const i = $("input.input", f);
@@ -834,10 +851,24 @@ function recompute(form, v, st) {
   });
 }
 
+/** 所选时间前后最近的两次里程读数；没有时间轴数据时退回最新里程。 */
+function odoNeighbors(st, t) {
+  const pts = st.prefill?.odo_points;
+  if (!pts?.length || !t) return { prev: st.prefill?.last_odo != null ? [st.prefill.last_odo_ts, st.prefill.last_odo] : null, next: null };
+  let prev = null;
+  let next = null;
+  for (const p of pts) {
+    if (p[0] < t) prev = p;
+    else if (p[0] > t && !next) next = p;
+  }
+  return { prev, next };
+}
+
 function updateOdoDelta(form, st) {
   const el = $(".odo-delta", form);
   if (!el) return;
-  const last = st.prefill?.last_odo;
+  const { prev, next } = odoNeighbors(st, form.occurred_at.value);
+  const last = prev?.[1];
   const trip = form.trip_mode?.checked;
   const raw = toNum(form.odometer_km.value);
   form.odometer_km.placeholder = trip ? "本次行驶公里数" : last != null ? "上次 " + km(last) : "仪表盘总里程";
@@ -852,12 +883,10 @@ function updateOdoDelta(form, st) {
   }
   const delta = trip ? raw : raw - last;
   const total = trip ? last + raw : raw;
-  // 时间早于最新那条记录：是在补录历史，里程比最新的小是正常的，不标红
-  const lastTs = st.prefill?.last_odo_ts;
-  const backfill = !trip && lastTs && form.occurred_at.value && form.occurred_at.value < lastTs;
-  if (backfill) {
-    el.textContent = delta <= 0 ? `补录：比 ${fmtDate(lastTs)} 的最新里程少 ${km(-delta)} km` : `补录的里程比之后 ${fmtDate(lastTs)} 的还大`;
-    if (delta > 0) el.classList.add("warn-c");
+  // 补录历史：和所选时间之前的那次读数比，超过之后的读数才标红
+  if (next) {
+    el.textContent = total > next[1] ? `比之后 ${fmtDate(next[0])} 的 ${km(next[1])} km 还大` : `比 ${fmtDate(prev[0])} ${delta >= 0 ? "+" : ""}${km(delta)} km`;
+    if (delta < 0 || total > next[1]) el.classList.add("warn-c");
     return;
   }
   el.textContent = trip ? `总里程 ${km(total)}` : `本次 ${delta >= 0 ? "+" : ""}${km(delta)} km`;
@@ -870,14 +899,14 @@ function collect(form, v, st, { startOnly = false } = {}) {
   const kind = st.kind;
   const trip = form.trip_mode?.checked;
   let odo = form.odo_unknown?.checked ? null : toNum(form.odometer_km.value);
-  if (odo != null && trip && st.prefill?.last_odo != null) odo = st.prefill.last_odo + odo;
+  const prevOdo = odoNeighbors(st, form.occurred_at.value).prev?.[1];
+  if (odo != null && trip && prevOdo != null) odo = prevOdo + odo;
   const cents = (n) => {
     const x = val(form, n);
     return x == null ? null : Math.round(x * 100);
   };
   const est = new Set(st.est);
   const amount = cents("amount");
-  const paidUser = cents("paid");
   const b = {
     vehicle_id: v.id,
     kind,
@@ -888,9 +917,7 @@ function collect(form, v, st, { startOnly = false } = {}) {
     source: st.record?.source || (parseLocal(form.occurred_at.value) < new Date(Date.now() - 7 * 86400000) ? "backfill" : "manual"),
     note: form.note.value.trim(),
     missed_before: !!form.missed_before?.checked,
-    payer_user_id: form.payer_user_id ? +form.payer_user_id.value : null,
-    amount_cents: amount,
-    paid_cents: paidUser ?? amount,
+        amount_cents: amount,
     extra_fee_cents: cents("extra_fee"),
     soc_before_pct: val(form, "soc_before_pct"),
     fuel_level_before_pct: val(form, "fuel_level_before_pct"),
@@ -899,7 +926,6 @@ function collect(form, v, st, { startOnly = false } = {}) {
     lat: st.coords?.lat ?? null,
     lng: st.coords?.lng ?? null,
   };
-  if (amount != null && $(".input.auto[name=amount]", form) && (est.has("fuel_l") || est.has("charge_kwh"))) est.add("paid_cents");
   if (kind === "fuel") {
     Object.assign(b, {
       fuel_grade: form.dataset.fuel_grade || null,
@@ -920,7 +946,7 @@ function collect(form, v, st, { startOnly = false } = {}) {
       energy_fee_cents: cents("energy_fee"),
       service_fee_cents: cents("service_fee"),
     });
-    if (startOnly) b.amount_cents = b.paid_cents = null;
+    if (startOnly) b.amount_cents = null;
   }
   if (kind === "snapshot") b.snapshot_tag = form.dataset.snapshot_tag || "other";
   if (odo == null) est.add("odometer_km");
@@ -1037,7 +1063,7 @@ function afterSave(res, record, startOnly) {
   }
   if (!seg) {
     const finished = record?.status === "in_progress";
-    toast(finished ? "充电已结束" : record ? "已保存" : "已记录", { sub: finished && r.charge_kwh ? `本次 ${num(r.charge_kwh)} kWh · ${money(r.paid_cents)}` : "", actions });
+    toast(finished ? "充电已结束" : record ? "已保存" : "已记录", { sub: finished && r.charge_kwh ? `本次 ${num(r.charge_kwh)} kWh · ${money(r.amount_cents)}` : "", actions });
     return;
   }
   let text;
@@ -1057,7 +1083,7 @@ function afterSave(res, record, startOnly) {
 
 const INSURANCE_ITEMS = ["交强险", "商业险", "驾意险", "车船税"];
 
-function renderExpense(form, ctx, v, st, { record, mems, showPayer, time, keep, preset }) {
+function renderExpense(form, ctx, v, st, { record, time, keep, preset }) {
   const cat = record?.category || preset.category || "maintenance";
   form.innerHTML = String(html`
     <div class="cat-grid">${Object.entries(EXPENSE_LABEL).map(([k, l]) => html`<button type="button" class="cat-tile ${k === cat ? "on" : ""}" data-cat="${k}">
@@ -1074,7 +1100,6 @@ function renderExpense(form, ctx, v, st, { record, mems, showPayer, time, keep, 
       ${numField("odometer_km", "里程（可选）", "km", { mode: "numeric" })}</div>
     <div class="grid-2"><div class="field"><label>名称（可选）</label><input class="input" name="title" maxlength="64" placeholder="如：小保养"></div>
       <div class="field"><label>商家（可选）</label><input class="input" name="vendor" maxlength="64" placeholder="如：4S 店"></div></div>
-    ${showPayer ? html`<div class="field"><label>付款人</label><select class="input" name="payer_user_id">${mems.map((m) => html`<option value="${m.id}">${m.name}${m.is_me ? "（我）" : ""}</option>`)}</select></div>` : ""}
     <div class="field"><label>备注</label><textarea class="input" name="note" rows="2" maxlength="500" placeholder="可不填"></textarea></div>
     <div class="form-error"></div>`);
   let category = cat;
@@ -1122,12 +1147,10 @@ function renderExpense(form, ctx, v, st, { record, mems, showPayer, time, keep, 
       const i = $(`[data-ins="${it.name}"]`, form);
       if (i) i.value = it.cents / 100;
     }
-    if (form.payer_user_id && record.payer_user_id) form.payer_user_id.value = record.payer_user_id;
-  } else {
+      } else {
     if (keep?.odometer_km) form.odometer_km.value = keep.odometer_km;
     if (preset.title) form.title.value = preset.title;
-    if (form.payer_user_id) form.payer_user_id.value = state.user.id;
-  }
+      }
   syncCat();
   ctx.setFoot(`<button type="button" class="btn btn-primary grow" data-save>${icon("check", 18)}保存</button>`);
   $("[data-save]", ctx.foot).onclick = async (e) => {
@@ -1146,8 +1169,7 @@ function renderExpense(form, ctx, v, st, { record, mems, showPayer, time, keep, 
       amount_cents: Math.round(amt * 100),
       vendor: form.vendor.value.trim(),
       note: form.note.value.trim(),
-      payer_user_id: form.payer_user_id ? +form.payer_user_id.value : null,
-      period_start: category === "insurance" ? form.period_start.value || null : null,
+            period_start: category === "insurance" ? form.period_start.value || null : null,
       period_end: category === "insurance" ? form.period_end.value || null : null,
       sub_items: category === "insurance" ? $$("[data-ins]", form).filter((i) => toNum(i.value)).map((i) => ({ name: i.dataset.ins, cents: Math.round(toNum(i.value) * 100) })) : [],
     };

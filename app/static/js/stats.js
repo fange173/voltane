@@ -3,7 +3,7 @@ import { barChart, donut, lineChart } from "./charts.js";
 import { CATEGORY_ICON, icon } from "./icons.js";
 import { navigate } from "./router.js";
 import { listen, resetView, setNav, setTitle, view } from "./shell.js";
-import { CHARGE_LABEL, EXPENSE_LABEL, SEGMENT_TAGS, currentVehicle, gradeLabel, payerEnabled, pref, savePref, state } from "./state.js";
+import { CHARGE_LABEL, EXPENSE_LABEL, SEGMENT_TAGS, currentVehicle, gradeLabel, pref, savePref, state } from "./state.js";
 import { bindRows, itemRow, openDetail } from "./records.js";
 import { bindSegmented, changeTag, emptyState, qTag, skeleton } from "./ui.js";
 import { $, $$, api, esc, fixed, fmtDate, html, km, money, num, raw, todayISO } from "./util.js";
@@ -144,7 +144,7 @@ function segList(v, d) {
     if (s.kind === "short") tags.push(html`<span class="badge">短段</span>`);
     if (s.tag !== "normal") tags.push(html`<span class="badge brand">${SEGMENT_TAGS[s.tag]}</span>`);
     if (s.excluded) tags.push(html`<span class="badge">已排除</span>`);
-    if (s.anomaly) tags.push(html`<span class="badge warn">${{ high: "偏高", low: "偏低", parked: "停放" }[s.anomaly]}</span>`);
+    if (s.anomaly) tags.push(html`<span class="badge warn">${{ high: "偏高", low: "偏低", parked: "停放", idle_high: "耗电偏高" }[s.anomaly]}</span>`);
     return html`<button class="list-item seg-row" data-end="${s.end_id}">
       <span class="ico sm ${s.energy === "fuel" ? "fuel" : "elec"}">${raw(icon(s.energy === "fuel" ? "fuel" : "bolt", 16))}</span>
       <span class="grow"><span class="rec-title">${fmtDate(s.start_ts)} → ${fmtDate(s.end_ts)} ${tags}</span><span class="rec-sub">${km(s.distance)} km · ${num(s.days, 1)} 天${s.quality !== "A" ? " · 估算" : ""}</span></span>
@@ -187,8 +187,7 @@ async function costTab(body, v) {
     ${d.prices?.elec?.length > 1 ? html`<div class="card chart-card"><div class="card-head"><span class="card-title"><i class="lg-dot elec"></i>电价走势</span><span class="card-sub">元/度（实付）</span></div><div id="c-pe" class="chart-box"></div></div>` : ""}
     ${d.places?.length ? html`<div class="section-title"><span>常去的地点</span></div><div class="card flush list">${d.places.slice(0, 8).map((p) => html`<div class="list-item">
       <span class="ico sm ${p.kind === "fuel" ? "fuel" : "elec"}">${raw(icon(p.kind === "fuel" ? "fuel" : "bolt", 16))}</span><span class="grow">${p.name}<div class="tiny muted">${p.count} 次 · ${money(p.cents, { digits: 0 })}</div></span>
-      <span class="num">${p.avg_price != null ? "¥" + fixed(p.avg_price, p.kind === "fuel" ? 2 : 3) : "–"}<small class="muted">/${p.kind === "fuel" ? "L" : "度"}</small></span></div>`)}</div>` : ""}
-    ${payerEnabled() && d.payers?.length > 1 ? html`<div class="section-title"><span>谁付的</span></div><div class="card flush list">${d.payers.map((p) => html`<div class="list-item"><span class="grow">${p.user?.name || "未知"}</span><b class="num">${money(p.cents)}</b></div>`)}</div>` : ""}`);
+      <span class="num">${p.avg_price != null ? "¥" + fixed(p.avg_price, p.kind === "fuel" ? 2 : 3) : "–"}<small class="muted">/${p.kind === "fuel" ? "L" : "度"}</small></span></div>`)}</div>` : ""}`);
   bindSegmented($("#c-range", body), (k) => {
     savePref("cost_range", k);
     costTab(body, v);
@@ -400,7 +399,7 @@ export async function yearPage({ params }) {
     </div>
     <div class="grid-2 resp-2">
       ${d.best_month ? html`<div class="card highlight"><span class="tiny muted">跑得最多的月份</span><b class="num">${+d.best_month.month.slice(5)} 月 · ${km(d.best_month.mileage)} km</b></div>` : ""}
-      ${top ? html`<div class="card highlight"><span class="tiny muted">最贵的一笔</span><b>${top.type === "expense" ? EXPENSE_LABEL[top.category] + (top.title ? " · " + top.title : "") : top.kind === "fuel" ? "加油" : "充电"} · <span class="num">${money(top.type === "expense" ? top.amount_cents : top.paid_cents)}</span></b><span class="tiny muted">${fmtDate(top.occurred_at, { year: true })}</span></div>` : ""}
+      ${top ? html`<div class="card highlight"><span class="tiny muted">最贵的一笔</span><b>${top.type === "expense" ? EXPENSE_LABEL[top.category] + (top.title ? " · " + top.title : "") : top.kind === "fuel" ? "加油" : "充电"} · <span class="num">${money(top.amount_cents)}</span></b><span class="tiny muted">${fmtDate(top.occurred_at, { year: true })}</span></div>` : ""}
       ${r.elec?.idle ? html`<div class="card highlight"><span class="tiny muted">全年静置损耗</span><b class="num">${num(r.elec.idle.amount, 0)} kWh</b><span class="tiny muted">约占用电 ${num((r.elec.idle.share || 0) * 100, 0)}%</span></div>` : ""}
       ${r.home_share != null ? html`<div class="card highlight"><span class="tiny muted">家充占比</span><b class="num">${num(r.home_share * 100, 0)}%</b></div>` : ""}
     </div>`);

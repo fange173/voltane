@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.access import require_vehicle
 from app.auth import require_admin, get_current_user, user_brief
-from app.constants import EXPENSE_CATEGORIES, RECORD_KINDS
+from app.constants import EXPENSE_CATEGORIES, RECORD_KINDS, norm_charge_type
 from app.database import (
     DATABASE_URL,
     Expense,
@@ -34,6 +34,7 @@ from app.database import (
     Vehicle,
     VehicleMember,
     engine,
+    run_migrations,
     get_db,
     get_setting,
     hash_password,
@@ -232,6 +233,8 @@ async def restore_backup(file: UploadFile = File(...), _: User = Depends(require
     finally:
         os.unlink(tmp)
     engine.dispose()
+    # 旧版本的备份要补跑迁移，否则要等下次重启才生效
+    run_migrations()
     from app.services import _cache
 
     _cache.clear()
@@ -245,7 +248,7 @@ RECORD_CSV = [
     ("fuel_liters", "加油量L"), ("fuel_unit_price", "油价"), ("fuel_is_full", "加满"),
     ("fuel_level_before_pct", "加油前油量%"), ("charge_type", "充电方式"), ("charge_kwh", "充电量kWh"),
     ("charge_unit_price", "电价"), ("charge_to_limit", "充到上限"), ("soc_before_pct", "开始SOC"),
-    ("soc_after_pct", "结束SOC"), ("amount_cents", "金额"), ("paid_cents", "实付"), ("extra_fee_cents", "附加费"),
+    ("soc_after_pct", "结束SOC"), ("amount_cents", "花费金额"), ("extra_fee_cents", "附加费"),
     ("place_name", "地点"), ("missed_before", "漏记"), ("snapshot_tag", "快照标签"), ("note", "备注"),
 ]
 
@@ -346,14 +349,18 @@ async def import_json(vehicle_id: int, file: UploadFile = File(...), user: User 
     for r in data.get("records", []):
         if r.get("status") == "in_progress" or r.get("kind") not in RECORD_KINDS or not r.get("occurred_at"):
             continue
-        row = Record(vehicle_id=v.id, created_by=user.id, updated_by=user.id, payer_user_id=user.id,
+        row = Record(vehicle_id=v.id, created_by=user.id, updated_by=user.id,
                      source="import", import_batch_id=batch)
         for k, val in r.items():
-            if k in cols and k not in ("id", "vehicle_id", "created_by", "updated_by", "payer_user_id", "client_id",
+            if k in cols and k not in ("id", "vehicle_id", "created_by", "updated_by", "client_id",
                                         "version", "deleted_at", "created_at", "updated_at", "place_id", "source",
                                         "occurred_at", "estimated_fields"):
                 setattr(row, k, val)
         row.occurred_at = _dt(r["occurred_at"])
+        row.charge_type = norm_charge_type(row.charge_type)
+        # 旧版导出带「实付」：实付才是真实花费，与数据库迁移 v2 的口径一致
+        if r.get("paid_cents") is not None:
+            row.amount_cents = r["paid_cents"]
         row.status = "done"
         row.estimated_fields = json.dumps([x for x in (r.get("estimated_fields") or []) if isinstance(x, str)][:20])
         db.add(row)
@@ -366,7 +373,7 @@ async def import_json(vehicle_id: int, file: UploadFile = File(...), user: User 
                        occurred_at=_dt(e["occurred_at"]), odometer_km=e.get("odometer_km"),
                        amount_cents=int(e.get("amount_cents") or 0), vendor=e.get("vendor") or "",
                        period_start=_d(e.get("period_start")), period_end=_d(e.get("period_end")),
-                       note=e.get("note") or "", payer_user_id=user.id, created_by=user.id, updated_by=user.id,
+                       note=e.get("note") or "", created_by=user.id, updated_by=user.id,
                        import_batch_id=batch))
         n_exp += 1
     bump(v)

@@ -24,6 +24,9 @@ ANOMALY_HIGH = 1.5
 ANOMALY_LOW = 0.5
 PARKED_MIN_DAYS = 2.0
 PARKED_KM_PER_DAY = 5.0
+# 静置耗电异常：段至少半天、日均耗电至少 0.3 kWh 才判断
+IDLE_MIN_DAYS = 0.5
+IDLE_MIN_KWH_DAY = 0.3
 # 补录估算数量的相对误差
 EST_QTY_ERR = 0.05
 # 出厂自带油量的估算误差（升）
@@ -279,9 +282,9 @@ def summary_diffs(summaries: list[Summary], records: list[Rec], fuel_price: floa
         inside = [r for r in records if s.start <= r.ts.date() <= s.end]
         rec = {
             "fuel_l": sum(r.fuel_l or 0 for r in inside if r.kind == "fuel"),
-            "fuel_cents": sum(r.paid_cents for r in inside if r.kind == "fuel"),
+            "fuel_cents": sum(r.cost_cents for r in inside if r.kind == "fuel"),
             "elec_kwh": sum(r.charge_kwh or 0 for r in inside if r.kind == "charge"),
-            "elec_cents": sum(r.paid_cents for r in inside if r.kind == "charge"),
+            "elec_cents": sum(r.cost_cents for r in inside if r.kind == "charge"),
         }
         fuel_total, fuel_est = s.fuel_l, False
         if fuel_total is None and s.fuel_cents:
@@ -334,9 +337,9 @@ def _avg_price(recs: list[Rec], energy: str) -> Optional[float]:
     qty = cents = 0.0
     for r in recs:
         q = raw_added(r, energy)
-        if q > 0 and r.paid_cents:
+        if q > 0 and r.cost_cents:
             qty += q
-            cents += r.paid_cents
+            cents += r.cost_cents
     return cents / 100 / qty if qty > 0 else None
 
 
@@ -423,19 +426,14 @@ def _elec_segments(points, p: VehicleParams) -> list[Segment]:
     return out
 
 
-def _combined_segments(points, p: VehicleParams, k: Optional[float]) -> list[Segment]:
-    strict = [i for i, pt in enumerate(points) if _strict_fuel_anchor(pt)]
+def _combined_segments(points, fuel_segs: list[Segment], k: Optional[float]) -> list[Segment]:
+    """综合段与油耗段一一对应（加满到加满，以及油表读数之间），同一区间再算期间用电。"""
     segs = []
-    n = 0
-    while n < len(strict) - 1:
-        i = strict[n]
-        m = n + 1
-        while m < len(strict) - 1 and points[strict[m]].odo - points[i].odo < p.min_segment_km:
-            m += 1
-        j = strict[m]
-        n = m
+    for fs in fuel_segs:
+        i, j = fs._i, fs._j
         fsp = span(points, i, j, "fuel")
         seg = _make_segment(points, i, j, "combined", fsp)
+        seg.kind = fs.kind
         esp = span(points, i, j, "elec")
         if esp.status == "unknown":
             # 两端没有电量读数：只用期间充电量，误差按 SOC 差 ±20 个百分点计
@@ -468,13 +466,21 @@ def _apply_marks(segs: list[Segment], marks: dict, energy: str) -> None:
             s.kind = "idle"
 
 
-def _detect_anomalies(segs: list[Segment], energy: str, hybrid: bool = False) -> None:
-    """插混/增程每段油电比例随驾驶模式变化，单能源能耗偏高偏低没有意义，只识别停放耗电。"""
+def equiv_per100(s: Segment, kwh_per_l: float) -> Optional[float]:
+    """综合段折合油耗：油 + 电按热值折成升。"""
+    if s.amount is None or s.elec_kwh is None or s.distance < 1:
+        return None
+    return (s.amount + s.elec_kwh / kwh_per_l) / s.distance * 100
+
+
+def _detect_anomalies(segs: list[Segment], energy: str, hybrid: bool = False, kwh_per_l: float = 8.9) -> None:
+    """插混/增程每段油电比例随驾驶模式变化，单能源能耗偏高偏低没有意义：
+    单能源只识别停放耗电，偏高偏低改看综合段的折合油耗。"""
     history = []
     for s in segs:
         if s.status != "ok" or s.kind != "drive":
             continue
-        v = s.per100
+        v = equiv_per100(s, kwh_per_l) if energy == "combined" else s.per100
         if v is None:
             continue
         if s.tag == "normal" and not s.excluded:
@@ -487,6 +493,20 @@ def _detect_anomalies(segs: list[Segment], energy: str, hybrid: bool = False) ->
                 elif v < base * ANOMALY_LOW:
                     s.anomaly = "low"
         if s.anomaly is None and s.tag == "normal" and not s.excluded:
+            history.append(v)
+
+
+def _detect_idle_anomalies(segs: list[Segment]) -> None:
+    """静置段日均耗电明显高于以往静置（如哨兵、空调忘关），与车型无关。"""
+    history = []
+    for s in segs:
+        if s.status != "ok" or s.kind != "idle" or s.amount is None or s.days < IDLE_MIN_DAYS:
+            continue
+        v = s.amount / s.days
+        if s.tag == "normal" and not s.excluded and len(history) >= ANOMALY_MIN_BASE:
+            if v > median(history[-20:]) * ANOMALY_HIGH and v >= IDLE_MIN_KWH_DAY:
+                s.anomaly = "idle_high"
+        if s.anomaly is None and not s.excluded:
             history.append(v)
 
 
@@ -557,7 +577,7 @@ def build_ledger(
     if params.has_elec:
         led.elec_segments = _elec_segments(points, params)
     if params.has_fuel and params.has_elec:
-        led.combined_segments = _combined_segments(points, params, k)
+        led.combined_segments = _combined_segments(points, led.fuel_segments, k)
 
     for energy, segs in (("fuel", led.fuel_segments), ("elec", led.elec_segments), ("combined", led.combined_segments)):
         for s in segs:
@@ -567,8 +587,9 @@ def build_ledger(
             if energy != "combined" and s.cost_cents is None:
                 s.cost_cents = _segment_cost(points, s._i, s._j, energy, s.amount) if s.status == "ok" else None
         _apply_marks(segs, marks, energy)
-        if energy != "combined":
-            _detect_anomalies(segs, energy, params.has_fuel and params.has_elec)
+        _detect_anomalies(segs, energy, energy != "combined" and params.has_fuel and params.has_elec, params.kwh_per_l)
+        if energy == "elec":
+            _detect_idle_anomalies(segs)
 
     led.hints = _detect_missed(points, params, k)
     return led

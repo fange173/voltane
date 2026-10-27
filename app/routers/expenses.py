@@ -9,12 +9,12 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.access import can_delete_entity, my_vehicle_ids, require_vehicle
 from app.auth import get_current_user
-from app.constants import CATEGORY_TO_TEMPLATES, EXPENSE_CATEGORIES, PLACE_KINDS, REMINDER_TEMPLATES, TEMPLATE_BY_KEY
+from app.constants import CATEGORY_TO_TEMPLATES, norm_charge_type, EXPENSE_CATEGORIES, PLACE_KINDS, REMINDER_TEMPLATES, TEMPLATE_BY_KEY
 from app.database import Expense, Place, Record, Reminder, ReminderMute, User, Vehicle, VehicleMember, get_db, localnow, utcnow
 from app.engine.aggregate import avg_daily_km, odo_observations
 from app.engine.reminders import ReminderIn, evaluate, next_due
@@ -43,7 +43,6 @@ class ExpenseIn(BaseModel):
     vendor: str = Field("", max_length=64)
     period_start: Optional[date] = None
     period_end: Optional[date] = None
-    payer_user_id: Optional[int] = None
     note: str = Field("", max_length=500)
     client_id: Optional[str] = Field(None, max_length=40)
     version: Optional[int] = None
@@ -58,7 +57,7 @@ class ExpenseIn(BaseModel):
 
 def _apply_expense(e: Expense, body: ExpenseIn) -> None:
     for k in ("category", "title", "occurred_at", "odometer_km", "amount_cents", "vendor", "period_start",
-              "period_end", "payer_user_id"):
+              "period_end"):
         setattr(e, k, getattr(body, k))
     e.note = body.note.strip()
     e.sub_items = json.dumps([s.model_dump() for s in body.sub_items], ensure_ascii=False)
@@ -98,10 +97,6 @@ def create_expense(body: ExpenseIn, user: User = Depends(get_current_user), db: 
             return {"expense": expense_dict(exist), "replayed": True}
     e = Expense(vehicle_id=v.id, created_by=user.id, updated_by=user.id, client_id=body.client_id)
     _apply_expense(e, body)
-    if e.payer_user_id is None:
-        e.payer_user_id = user.id
-    elif not db.get(VehicleMember, (v.id, e.payer_user_id)):
-        raise HTTPException(400, "付款人不是这辆车的成员")
     db.add(e)
     db.flush()
     ins = _sync_insurance(db, v, e, user)
@@ -118,8 +113,8 @@ def get_expense(eid: int, user: User = Depends(get_current_user), db: Session = 
     if not e:
         raise HTTPException(404, "费用不存在")
     v, role = require_vehicle(db, user, e.vehicle_id)
-    d = expense_dict(e, users_map(db, [e.created_by, e.payer_user_id]))
-    d["can_delete"] = can_delete_entity(role, user, e.created_by)
+    d = expense_dict(e, users_map(db, [e.created_by]))
+    d["can_delete"] = can_delete_entity(role, user, e.created_by) and not v.is_archived
     d["can_edit"] = role in ("owner", "editor") and not v.is_archived
     return d
 
@@ -328,7 +323,7 @@ def complete_reminder(rid: int, body: CompleteIn, user: User = Depends(get_curre
         db.add(Expense(vehicle_id=r.vehicle_id, category=cat, title=r.title,
                        occurred_at=datetime.combine(body.done_at, datetime.min.time()).replace(hour=12),
                        odometer_km=body.odometer_km, amount_cents=body.expense_cents, vendor=body.vendor,
-                       note=body.note, payer_user_id=user.id, created_by=user.id, updated_by=user.id))
+                       note=body.note, created_by=user.id, updated_by=user.id))
     if r.vehicle_id:
         log_activity(db, r.vehicle_id, user, "update", "reminder", r.id, f"完成了「{r.title}」")
     db.commit()
@@ -382,6 +377,11 @@ class PlaceIn(BaseModel):
             raise ValueError("地点类型不正确")
         return v
 
+    @field_validator("default_charge_type")
+    @classmethod
+    def _ct(cls, v):
+        return norm_charge_type(v)
+
 
 def place_dict(p: Place) -> dict:
     try:
@@ -423,6 +423,22 @@ def list_places(vehicle_id: Optional[int] = None, user: User = Depends(get_curre
     return [place_dict(p) for p in rows]
 
 
+def _link_place_records(db: Session, p: Place, user: User) -> None:
+    """地点名称同步到已关联的记录，并把同名、还没关联地点的记录关联过来（共享地点限本车，私人地点限本人记的）。"""
+    db.execute(update(Record).where(Record.place_id == p.id).values(place_name=p.name))
+    q = select(Record.id).where(Record.place_id.is_(None), Record.place_name == p.name)
+    if p.vehicle_id is not None:
+        q = q.where(Record.vehicle_id == p.vehicle_id)
+    else:
+        q = q.where(Record.vehicle_id.in_(my_vehicle_ids(db, user)), Record.created_by == user.id)
+    ids = list(db.scalars(q))
+    if not ids:
+        return
+    db.execute(update(Record).where(Record.id.in_(ids)).values(place_id=p.id))
+    alive = db.scalar(select(func.count()).select_from(Record).where(Record.id.in_(ids), Record.deleted_at.is_(None)))
+    p.use_count = (p.use_count or 0) + (alive or 0)
+
+
 @router.post("/places")
 def create_place(body: PlaceIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     vid = body.vehicle_id if body.shared else None
@@ -433,6 +449,8 @@ def create_place(body: PlaceIn, user: User = Depends(get_current_user), db: Sess
     p = Place(vehicle_id=vid, owner_user_id=user.id)
     _apply_place(p, body)
     db.add(p)
+    db.flush()
+    _link_place_records(db, p, user)
     db.commit()
     return place_dict(p)
 
@@ -444,6 +462,7 @@ def update_place(pid: int, body: PlaceIn, user: User = Depends(get_current_user)
         raise HTTPException(404, "地点不存在")
     _place_access(db, user, p)
     _apply_place(p, body)
+    _link_place_records(db, p, user)
     db.commit()
     return place_dict(p)
 

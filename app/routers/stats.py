@@ -213,7 +213,7 @@ def energy(vehicle_id: int, date_from: Optional[date] = None, date_to: Optional[
                 continue
             t = by_type["dc" if r.charge_type == "super" else (r.charge_type or "home")]
             t["kwh"] += r.charge_kwh or 0
-            t["cents"] += r.paid_cents or 0
+            t["cents"] += r.cost_cents or 0
             t["count"] += 1
             if r.soc_before is not None:
                 soc_start[min(int(r.soc_before // 10), 9)] += 1
@@ -296,22 +296,21 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
                 continue
             if r.kind in ("fuel", "charge"):
                 qty = (r.fuel_l if r.kind == "fuel" else r.charge_kwh) or 0
-                if r.paid_cents and qty > 0 and "paid_cents" not in r.estimated_fields:
+                if r.cost_cents and qty > 0 and "paid_cents" not in r.estimated_fields:
                     prices["fuel" if r.kind == "fuel" else "elec"].append({
-                        "ts": iso(r.ts), "price": round(r.paid_cents / 100 / qty, 3),
+                        "ts": iso(r.ts), "price": round(r.cost_cents / 100 / qty, 3),
                         "group": r.fuel_grade if r.kind == "fuel" else ("dc" if r.charge_type == "super" else (r.charge_type or "home")),
                         "vehicle_id": v.id})
                 if r.place_name:
                     pl = places[(r.kind, r.place_name)]
                     pl["count"] += 1
                     pl["qty"] += qty
-                    pl["cents"] += r.paid_cents or 0
+                    pl["cents"] += r.cost_cents or 0
                     pl["kind"] = r.kind
         for e in exps:
             if d0 <= e.ts.date() <= d1:
                 cats[e.category]["cents"] += e.amount_cents
                 cats[e.category]["count"] += 1
-    payers = _payer_totals(db, [v.id for v, _, _ in ctx], d0, d1)
     total = sum(c["cents"] for c in cats.values())
     cat_list = []
     labels = {"fuel": "加油", "elec": "充电", **EXPENSE_CATEGORIES}
@@ -329,28 +328,8 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
         "from": d0.isoformat(), "to": d1.isoformat(), "months": months, "categories": cat_list,
         "total_cents": total, "mileage": round(total_km, 1),
         "cost_per_km": round(total / 100 / total_km, 3) if total_km >= 1 else None,
-        "payers": payers, "places": place_list[:20], "prices": prices,
+        "places": place_list[:20], "prices": prices,
     }
-
-
-def _payer_totals(db: Session, vids: list, d0: date, d1: date) -> list:
-    from app.services import users_map
-
-    lo = datetime.combine(d0, datetime.min.time())
-    hi = datetime.combine(d1 + timedelta(days=1), datetime.min.time())
-    tot = defaultdict(int)
-    for pid, cents in db.execute(select(Record.payer_user_id, Record.paid_cents).where(
-            Record.vehicle_id.in_(vids), Record.deleted_at.is_(None), Record.status == "done",
-            Record.occurred_at >= lo, Record.occurred_at < hi)):
-        tot[pid] += cents or 0
-    for pid, cents in db.execute(select(Expense.payer_user_id, Expense.amount_cents).where(
-            Expense.vehicle_id.in_(vids), Expense.deleted_at.is_(None),
-            Expense.occurred_at >= lo, Expense.occurred_at < hi)):
-        tot[pid] += cents or 0
-    umap = users_map(db, tot.keys())
-    out = [{"user": umap.get(k), "cents": c} for k, c in tot.items() if c]
-    out.sort(key=lambda x: -x["cents"])
-    return out
 
 
 @router.get("/mileage")
@@ -457,7 +436,7 @@ def calendar(vehicle_id: int, month: Optional[str] = None, user: User = Depends(
         day = it["occurred_at"][:10]
         d = days[day]
         d["items"].append(it)
-        d["cents"] += (it.get("paid_cents") or 0) if it["type"] == "record" else it["amount_cents"]
+        d["cents"] += it.get("amount_cents") or 0
         k = it["kind"] if it["type"] == "record" else "expense"
         if k not in d["kinds"]:
             d["kinds"].append(k)
@@ -498,9 +477,9 @@ def yearly_report(vehicle_id: int, year: Optional[int] = None, user: User = Depe
                         .order_by(Expense.amount_cents.desc()).limit(1))
     top_rec = db.scalar(select(Record).where(Record.vehicle_id == v.id, Record.deleted_at.is_(None),
                                              Record.occurred_at >= lo, Record.occurred_at < hi)
-                        .order_by(Record.paid_cents.desc()).limit(1))
+                        .order_by(Record.amount_cents.desc()).limit(1))
     top = None
-    if top_exp and (not top_rec or (top_exp.amount_cents or 0) >= (top_rec.paid_cents or 0)):
+    if top_exp and (not top_rec or (top_exp.amount_cents or 0) >= (top_rec.amount_cents or 0)):
         top = {"type": "expense", **expense_dict(top_exp)}
     elif top_rec:
         top = {"type": "record", **record_dict(top_rec)}

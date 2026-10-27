@@ -221,7 +221,6 @@ class Record(Base):
     soc_before_pct: Mapped[Optional[float]] = mapped_column(Float)
     soc_after_pct: Mapped[Optional[float]] = mapped_column(Float)
     amount_cents: Mapped[Optional[int]] = mapped_column(Integer)
-    paid_cents: Mapped[Optional[int]] = mapped_column(Integer)
     extra_fee_cents: Mapped[Optional[int]] = mapped_column(Integer)
     place_id: Mapped[Optional[int]] = mapped_column(ForeignKey("places.id", ondelete="SET NULL"))
     place_name: Mapped[Optional[str]] = mapped_column(String(64))
@@ -229,7 +228,6 @@ class Record(Base):
     lng: Mapped[Optional[float]] = mapped_column(Float)
     missed_before: Mapped[bool] = mapped_column(Boolean, default=False)
     snapshot_tag: Mapped[Optional[str]] = mapped_column(String(16))
-    payer_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     note: Mapped[str] = mapped_column(Text, default="")
     import_batch_id: Mapped[Optional[str]] = mapped_column(String(32))
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
@@ -298,7 +296,6 @@ class Expense(Base):
     vendor: Mapped[str] = mapped_column(String(64), default="")
     period_start: Mapped[Optional[date]] = mapped_column(Date)
     period_end: Mapped[Optional[date]] = mapped_column(Date)
-    payer_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     note: Mapped[str] = mapped_column(Text, default="")
     client_id: Mapped[Optional[str]] = mapped_column(String(40), unique=True)
     import_batch_id: Mapped[Optional[str]] = mapped_column(String(32))
@@ -401,7 +398,15 @@ def _migrate_v1(conn) -> None:
     Base.metadata.create_all(conn)
 
 
-MIGRATIONS = [(1, _migrate_v1)]
+def _migrate_v2(conn) -> None:
+    """不再单独记实付和付款人：旧库里的 paid_cents 并入 amount_cents（实付才是真实花费），旧列保留不动。"""
+    cols = {r[1] for r in conn.execute(text("PRAGMA table_info(records)"))}
+    if "paid_cents" in cols:
+        conn.execute(text("UPDATE records SET amount_cents = paid_cents "
+                          "WHERE paid_cents IS NOT NULL AND (amount_cents IS NULL OR amount_cents != paid_cents)"))
+
+
+MIGRATIONS = [(1, _migrate_v1), (2, _migrate_v2)]
 
 
 def run_migrations() -> list[int]:

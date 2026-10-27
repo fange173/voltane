@@ -59,7 +59,7 @@ def rec_from_row(r: Record) -> Rec:
         charge_full=bool(r.charge_to_limit),
         soc_before=r.soc_before_pct,
         soc_after=r.soc_after_pct,
-        paid_cents=r.paid_cents if r.paid_cents is not None else (r.amount_cents or 0),
+        cost_cents=r.amount_cents or 0,
         extra_cents=r.extra_fee_cents or 0,
         missed_before=bool(r.missed_before),
         snapshot_tag=r.snapshot_tag,
@@ -155,8 +155,8 @@ RECORD_FIELDS = [
     "fuel_grade", "fuel_liters", "fuel_unit_price", "fuel_is_full", "fuel_level_before_pct",
     "fuel_level_after_pct", "charge_type", "charge_kwh", "charge_unit_price", "charge_minutes",
     "charge_to_limit", "energy_fee_cents", "service_fee_cents", "soc_before_pct", "soc_after_pct",
-    "amount_cents", "paid_cents", "extra_fee_cents", "place_id", "place_name", "lat", "lng",
-    "missed_before", "snapshot_tag", "payer_user_id", "note", "version", "client_id",
+    "amount_cents", "extra_fee_cents", "place_id", "place_name", "lat", "lng",
+    "missed_before", "snapshot_tag", "note", "version", "client_id",
 ]
 
 
@@ -170,13 +170,12 @@ def record_dict(r: Record, umap: Optional[dict] = None) -> dict:
     umap = umap or {}
     d["created_by"] = umap.get(r.created_by)
     d["updated_by"] = umap.get(r.updated_by)
-    d["payer"] = umap.get(r.payer_user_id)
     return d
 
 
 EXPENSE_FIELDS = [
     "id", "vehicle_id", "category", "title", "odometer_km", "amount_cents", "vendor",
-    "payer_user_id", "note", "version", "client_id",
+    "note", "version", "client_id",
 ]
 
 
@@ -191,7 +190,6 @@ def expense_dict(e: Expense, umap: Optional[dict] = None) -> dict:
         d["sub_items"] = []
     umap = umap or {}
     d["created_by"] = umap.get(e.created_by)
-    d["payer"] = umap.get(e.payer_user_id)
     d["deleted_at"] = iso(e.deleted_at)
     return d
 

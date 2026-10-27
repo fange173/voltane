@@ -400,11 +400,11 @@ def cash_and_qty(led: Ledger, expenses: list[Exp], d0: date, d1: date) -> dict:
             continue
         extra_c += r.extra_cents or 0
         if r.kind == "fuel":
-            fuel_c += r.paid_cents or 0
+            fuel_c += r.cost_cents or 0
             fuel_l += r.fuel_l or 0
             fuel_n += 1
         elif r.kind == "charge":
-            elec_c += r.paid_cents or 0
+            elec_c += r.cost_cents or 0
             elec_kwh += r.charge_kwh or 0
             elec_n += 1
             if r.charge_type == "home":

@@ -12,12 +12,12 @@ def rec(c, **kw):
 
 def seed_a(c):
     """方案文档算例 A。"""
-    assert rec(c, odometer_km=10000, fuel_liters=30, paid_cents=22500, fuel_is_full=True, soc_before_pct=30).status_code == 200
+    assert rec(c, odometer_km=10000, fuel_liters=30, amount_cents=22500, fuel_is_full=True, soc_before_pct=30).status_code == 200
     assert rec(c, kind="charge", occurred_at="2026-09-03T20:00", odometer_km=10150, soc_before_pct=12,
-               soc_after_pct=100, charge_kwh=17.6, paid_cents=528, charge_type="home").status_code == 200
+               soc_after_pct=100, charge_kwh=17.6, amount_cents=528, charge_type="home").status_code == 200
     assert rec(c, kind="charge", occurred_at="2026-09-07T20:00", odometer_km=10330, soc_before_pct=8,
-               soc_after_pct=100, charge_kwh=18.4, paid_cents=552, charge_type="home").status_code == 200
-    return rec(c, occurred_at="2026-09-12T08:00", odometer_km=10820, fuel_liters=22, paid_cents=16720,
+               soc_after_pct=100, charge_kwh=18.4, amount_cents=552, charge_type="home").status_code == 200
+    return rec(c, occurred_at="2026-09-12T08:00", odometer_km=10820, fuel_liters=22, amount_cents=16720,
                fuel_is_full=True, soc_before_pct=20)
 
 
@@ -43,7 +43,7 @@ def test_bev_cannot_fuel(make_user):
 
 
 def test_duplicate_and_force(vehicle):
-    body = dict(odometer_km=500, fuel_liters=20, paid_cents=15000, fuel_is_full=True)
+    body = dict(odometer_km=500, fuel_liters=20, amount_cents=15000, fuel_is_full=True)
     assert rec(vehicle, **body).status_code == 200
     r = rec(vehicle, occurred_at="2026-09-01T08:05", **body)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "duplicate"
@@ -51,13 +51,13 @@ def test_duplicate_and_force(vehicle):
 
 
 def test_client_id_idempotent(vehicle):
-    a = rec(vehicle, odometer_km=100, fuel_liters=10, paid_cents=7500, client_id="abc-1")
-    b = rec(vehicle, odometer_km=100, fuel_liters=10, paid_cents=7500, client_id="abc-1")
+    a = rec(vehicle, odometer_km=100, fuel_liters=10, amount_cents=7500, client_id="abc-1")
+    b = rec(vehicle, odometer_km=100, fuel_liters=10, amount_cents=7500, client_id="abc-1")
     assert a.json()["record"]["id"] == b.json()["record"]["id"] and b.json()["replayed"]
 
 
 def test_version_conflict(vehicle):
-    r = rec(vehicle, odometer_km=100, fuel_liters=10, paid_cents=7500).json()["record"]
+    r = rec(vehicle, odometer_km=100, fuel_liters=10, amount_cents=7500).json()["record"]
     body = {"vehicle_id": vehicle.vid, "kind": "fuel", "occurred_at": "2026-09-01T08:00", "odometer_km": 101,
             "version": r["version"]}
     assert vehicle.put(f"/api/records/{r['id']}", json=body).status_code == 200
@@ -65,8 +65,8 @@ def test_version_conflict(vehicle):
 
 
 def test_odometer_warning(vehicle):
-    rec(vehicle, odometer_km=1000, fuel_liters=10, paid_cents=7500)
-    r = rec(vehicle, occurred_at="2026-09-02T08:00", odometer_km=900, fuel_liters=10, paid_cents=7600)
+    rec(vehicle, odometer_km=1000, fuel_liters=10, amount_cents=7500)
+    r = rec(vehicle, occurred_at="2026-09-02T08:00", odometer_km=900, fuel_liters=10, amount_cents=7600)
     assert any("里程小于" in w for w in r.json()["warnings"])
 
 
@@ -87,8 +87,8 @@ def test_sharing_permissions(vehicle, make_user):
     editor = make_user("e")
     assert editor.post(f"/api/invites/{inv['code']}/accept").status_code == 200
     editor.vid = vehicle.vid
-    mine = rec(editor, odometer_km=50, fuel_liters=5, paid_cents=3800).json()["record"]["id"]
-    theirs = rec(vehicle, occurred_at="2026-09-02T08:00", odometer_km=60, fuel_liters=5, paid_cents=3900).json()["record"]["id"]
+    mine = rec(editor, odometer_km=50, fuel_liters=5, amount_cents=3800).json()["record"]["id"]
+    theirs = rec(vehicle, occurred_at="2026-09-02T08:00", odometer_km=60, fuel_liters=5, amount_cents=3900).json()["record"]["id"]
     assert editor.delete(f"/api/records/{theirs}").status_code == 403
     assert editor.delete(f"/api/records/{mine}").status_code == 200
     # 邀请码只能用一次
@@ -253,7 +253,7 @@ def test_wizard_midlife_without_delivery_info(make_user):
     ov = c.get(f"/api/stats/overview?vehicle_id={c.vid}").json()
     assert ov["latest"]["fuel"]["quality"] == "D"
     # 补录记账起点之前的加油（带里程），不应把记录搅乱
-    assert rec(c, occurred_at="2026-03-01T10:00", odometer_km=20000, fuel_liters=40, paid_cents=30000,
+    assert rec(c, occurred_at="2026-03-01T10:00", odometer_km=20000, fuel_liters=40, amount_cents=30000,
                fuel_is_full=True).status_code == 200
     h = c.get(f"/api/vehicles/{c.vid}/health").json()
     assert not any(i["key"] in ("delivery_odo", "odo_order") for i in h["issues"])
@@ -291,8 +291,8 @@ def test_fix_delivery_odometer(make_user):
 
 
 def test_health_flags_odometer_order_conflict(vehicle):
-    rec(vehicle, odometer_km=5000, fuel_liters=10, paid_cents=7500)
-    rec(vehicle, occurred_at="2026-09-05T08:00", odometer_km=4000, fuel_liters=10, paid_cents=7600)
+    rec(vehicle, odometer_km=5000, fuel_liters=10, amount_cents=7500)
+    rec(vehicle, occurred_at="2026-09-05T08:00", odometer_km=4000, fuel_liters=10, amount_cents=7600)
     h = vehicle.get(f"/api/vehicles/{vehicle.vid}/health").json()
     assert any(i["key"] == "odo_order" for i in h["issues"])
 
@@ -334,7 +334,7 @@ def test_new_car_mode_creates_delivery_anchor(make_user):
 
 
 def test_complete_km_reminder_without_odometer_uses_latest(vehicle):
-    rec(vehicle, odometer_km=12345, fuel_liters=10, paid_cents=7500)
+    rec(vehicle, odometer_km=12345, fuel_liters=10, amount_cents=7500)
     rid = vehicle.post("/api/reminders", json={"vehicle_id": vehicle.vid, "title": "保养", "due_odometer_km": 12000,
                                                "interval_km": 8000}).json()["id"]
     done = vehicle.post(f"/api/reminders/{rid}/complete", json={"done_at": "2026-10-01"}).json()
@@ -349,3 +349,91 @@ def test_deleting_delivery_snapshot_clears_initial_odometer(make_user):
     assert c.get(f"/api/vehicles/{c.vid}").json()["initial_odometer_km"] is None
     c.post(f"/api/records/{snap['id']}/restore")
     assert c.get(f"/api/vehicles/{c.vid}").json()["initial_odometer_km"] == 12
+
+
+def test_new_place_links_same_name_records_and_rename_syncs(vehicle):
+    c = vehicle
+    ids = []
+    for i, name in enumerate(["云快充", "云快充", "别处"]):
+        r = c.post("/api/records", json={"vehicle_id": c.vid, "kind": "charge", "occurred_at": f"2026-09-0{i + 1}T08:00",
+                                         "odometer_km": 100 + i * 50, "charge_kwh": 10, "charge_type": "dc", "place_name": name})
+        ids.append(r.json()["record"]["id"])
+    c.delete(f"/api/records/{ids[1]}")
+    p = c.post("/api/places", json={"vehicle_id": c.vid, "shared": True, "name": "云快充", "kind": "charge_station"}).json()
+    assert p["use_count"] == 1
+    recs = {x["id"]: x for x in c.get(f"/api/records?vehicle_id={c.vid}").json()["items"] if x["type"] == "record"}
+    assert recs[ids[0]]["place_id"] == p["id"] and recs[ids[2]]["place_id"] is None
+    body = {"vehicle_id": c.vid, "shared": True, "name": "云快充（周村）", "kind": "charge_station"}
+    assert c.put(f"/api/places/{p['id']}", json=body).status_code == 200
+    rec = c.get(f"/api/records/{ids[0]}").json()
+    assert rec["place_name"] == "云快充（周村）" and rec["place_id"] == p["id"]
+    c.post(f"/api/records/{ids[1]}/restore")
+    assert c.get(f"/api/records/{ids[1]}").json()["place_name"] == "云快充（周村）"
+
+
+def test_archived_vehicle_hides_delete(vehicle):
+    rid = rec(vehicle, odometer_km=100, fuel_liters=10, amount_cents=7500).json()["record"]["id"]
+    eid = vehicle.post("/api/expenses", json={"vehicle_id": vehicle.vid, "category": "parking",
+                                              "occurred_at": "2026-09-02T10:00", "amount_cents": 500}).json()["expense"]["id"]
+    assert vehicle.get(f"/api/records/{rid}").json()["can_delete"] is True
+    vehicle.post(f"/api/vehicles/{vehicle.vid}/archive", json={"archived": True})
+    assert vehicle.get(f"/api/records/{rid}").json()["can_delete"] is False
+    assert vehicle.get(f"/api/expenses/{eid}").json()["can_delete"] is False
+
+
+def test_super_charge_type_saved_as_dc(vehicle):
+    r = rec(vehicle, kind="charge", odometer_km=100, charge_kwh=10, charge_type="super").json()["record"]
+    assert vehicle.get(f"/api/records/{r['id']}").json()["charge_type"] == "dc"
+    p = vehicle.post("/api/places", json={"vehicle_id": vehicle.vid, "name": "超充站", "kind": "charge_station",
+                                          "default_charge_type": "super"}).json()
+    assert p["default_charge_type"] == "dc"
+    body = {**PHEV, "default_charge_type": "super"}
+    assert vehicle.put(f"/api/vehicles/{vehicle.vid}", json=body).status_code == 200
+    assert vehicle.get(f"/api/vehicles/{vehicle.vid}").json()["default_charge_type"] == "dc"
+
+
+def test_import_old_json_uses_paid_and_merges_super(vehicle):
+    data = {"app": "voltane", "records": [
+        {"kind": "charge", "occurred_at": "2026-09-01T08:00", "odometer_km": 100, "charge_kwh": 20,
+         "amount_cents": 3000, "paid_cents": 2400, "charge_type": "super"}]}
+    r = vehicle.post(f"/api/import?vehicle_id={vehicle.vid}",
+                     files={"file": ("a.json", io.BytesIO(json.dumps(data).encode()))})
+    assert r.json()["records"] == 1
+    item = next(x for x in vehicle.get(f"/api/records?vehicle_id={vehicle.vid}").json()["items"] if x["type"] == "record")
+    d = vehicle.get(f"/api/records/{item['id']}").json()
+    assert d["amount_cents"] == 2400 and d["charge_type"] == "dc"
+
+
+def test_idle_drain_shows_in_pending(make_user):
+    c = make_user()
+    c.vid = c.post("/api/vehicles", json={"name": "Y", "energy_type": "bev", "battery_usable_kwh": 60}).json()["id"]
+    soc, odo = 95, 1000
+    for i, drop in enumerate([2, 2, 2, 2, 8]):
+        for day, s in ((i * 3 + 1, soc), (i * 3 + 2, soc - drop)):
+            assert rec(c, kind="snapshot", occurred_at=f"2026-05-{day:02d}T08:00", odometer_km=odo,
+                       soc_before_pct=s).status_code == 200
+        soc -= drop + 10
+        odo += 100
+    ov = c.get(f"/api/stats/overview?vehicle_id={c.vid}").json()
+    [item] = [x for x in ov["pending"] if x["type"] == "anomaly"]
+    assert item["anomaly"] == "idle_high" and "停车耗电明显偏高" in item["text"] and "kWh" in item["text"]
+
+
+def test_restore_runs_migrations(admin, tmp_path):
+    import sqlite3
+
+    from app.database import MIGRATIONS
+    from app.routers.admin import DB_PATH
+
+    old = tmp_path / "old.db"
+    src, dst = sqlite3.connect(DB_PATH), sqlite3.connect(old)
+    src.backup(dst)
+    src.close()
+    dst.execute("PRAGMA user_version = 1")
+    dst.commit()
+    dst.close()
+    r = admin.post("/api/admin/restore", files={"file": ("old.db", old.read_bytes())})
+    assert r.status_code == 200, r.text
+    con = sqlite3.connect(DB_PATH)
+    assert con.execute("PRAGMA user_version").fetchone()[0] == MIGRATIONS[-1][0]
+    con.close()

@@ -25,13 +25,13 @@ def dt(s):
 
 
 def fuel(id, ts, odo, liters, paid, full=True, soc=None, **kw):
-    return Rec(id=id, kind="fuel", ts=dt(ts), odo=odo, fuel_l=liters, paid_cents=paid,
+    return Rec(id=id, kind="fuel", ts=dt(ts), odo=odo, fuel_l=liters, cost_cents=paid,
                fuel_full=full, soc_before=soc, **kw)
 
 
 def charge(id, ts, odo, s0, s1, kwh, paid, ctype="home", **kw):
     return Rec(id=id, kind="charge", ts=dt(ts), odo=odo, soc_before=s0, soc_after=s1,
-               charge_kwh=kwh, paid_cents=paid, charge_type=ctype, **kw)
+               charge_kwh=kwh, cost_cents=paid, charge_type=ctype, **kw)
 
 
 def snap(id, ts, odo, soc=None, fuel_pct=None, tag=None, **kw):
@@ -207,8 +207,8 @@ def test_short_segments_merge():
 def test_charge_without_soc_uses_full_to_full():
     p = VehicleParams(energy_type="bev")  # 没有电池容量、没有 SOC
     recs = [
-        Rec(id=1, kind="charge", ts=dt("2026-01-01T20:00"), odo=1000, charge_kwh=50, charge_full=True, paid_cents=1500),
-        Rec(id=2, kind="charge", ts=dt("2026-01-05T20:00"), odo=1300, charge_kwh=40, charge_full=True, paid_cents=1200),
+        Rec(id=1, kind="charge", ts=dt("2026-01-01T20:00"), odo=1000, charge_kwh=50, charge_full=True, cost_cents=1500),
+        Rec(id=2, kind="charge", ts=dt("2026-01-05T20:00"), odo=1300, charge_kwh=40, charge_full=True, cost_cents=1200),
     ]
     led = build_ledger(p, recs)
     assert led.calib.k is None
@@ -224,7 +224,7 @@ def test_no_capacity_no_samples():
 def test_out_of_order_and_estimated_odometer():
     recs = example_a()
     recs.append(Rec(id=9, kind="charge", ts=dt("2026-09-05T12:00"), odo=None, odo_estimated=True,
-                    charge_kwh=5, paid_cents=500, charge_type="public_ac"))
+                    charge_kwh=5, cost_cents=500, charge_type="public_ac"))
     led = build_ledger(VehicleParams(**PHEV), list(reversed(recs)))
     ids = [p.id for p in led.points]
     assert ids.index(9) > ids.index(2) and ids.index(9) < ids.index(3)
@@ -262,6 +262,45 @@ def test_anomaly_detection():
     led = build_ledger(VehicleParams(energy_type="bev", battery_kwh=60), recs)
     drives = [s for s in led.elec_segments if s.kind == "drive" and s.status == "ok"]
     assert drives[-1].anomaly == "high"
+
+
+def test_combined_from_gauge_readings_without_full():
+    """不加满也能出综合能耗：两次加油都记了加油前油量，按油表读数算，质量 B。"""
+    recs = [
+        fuel(1, "2026-03-01T08:00", 1000, 30.0, 22500, full=False, soc=50, fuel_before_pct=20),
+        charge(2, "2026-03-03T20:00", 1200, 20, 100, 16.0, 480),
+        fuel(3, "2026-03-06T08:00", 1400, 20.0, 15000, full=False, soc=30, fuel_before_pct=30),
+    ]
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    [c] = led.combined_segments
+    assert c.status == "ok" and c.quality == "B"
+    # 起点 9.6 + 30 = 39.6L，终点 14.4L；电 10 − 6 + 16 = 20kWh
+    assert c.amount == pytest.approx(25.2) and c.elec_kwh == pytest.approx(20.0)
+    assert combined_totals(led.combined_segments)["distance"] == 400
+
+
+def test_hybrid_anomaly_uses_combined_equivalent():
+    recs = [fuel(i + 1, f"2026-04-{i * 5 + 1:02d}T08:00", 1000 + i * 500, liters, 15000)
+            for i, liters in enumerate([20, 20, 20, 20, 20, 45])]
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    # 单能源不判断偏高偏低，综合段按折合油耗判断
+    assert all(s.anomaly is None for s in led.fuel_segments)
+    assert led.combined_segments[-1].anomaly == "high"
+    assert all(s.anomaly is None for s in led.combined_segments[:-1])
+
+
+def test_idle_drain_anomaly():
+    recs = []
+    soc, odo = 95, 1000
+    for i, drop in enumerate([2, 2, 2, 2, 8]):
+        recs.append(snap(2 * i + 1, f"2026-05-{i * 3 + 1:02d}T08:00", odo, soc=soc))
+        soc -= drop
+        recs.append(snap(2 * i + 2, f"2026-05-{i * 3 + 2:02d}T08:00", odo, soc=soc))
+        soc -= 10
+        odo += 100
+    led = build_ledger(VehicleParams(energy_type="bev", battery_kwh=60), recs)
+    idle = [s for s in led.elec_segments if s.kind == "idle"]
+    assert [s.anomaly for s in idle] == [None, None, None, None, "idle_high"]
 
 
 def test_mileage_and_combined_totals():
