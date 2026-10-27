@@ -7,7 +7,7 @@
 }
 .main {
   min-width: 0;
-  padding-bottom: calc(var(--nav-h) + var(--safe-b) + 32px);
+  padding-bottom: calc(var(--nav-h) + max(12px, calc(var(--safe-b) - 12px)) + 24px);
 }
 .view {
   padding: 4px 16px 16px;
@@ -83,7 +83,7 @@
   position: fixed;
   left: 14px;
   right: 14px;
-  bottom: calc(var(--safe-b) + 10px);
+  bottom: max(12px, calc(var(--safe-b) - 12px));
   z-index: 50;
   height: var(--nav-pill);
   max-width: 460px;
