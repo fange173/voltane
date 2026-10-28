@@ -125,6 +125,9 @@ class Segment:
     elec_kwh: Optional[float] = None
     elec_err: Optional[float] = None
     elec_quality: Optional[str] = None
+    # 标成静置但有行驶里程的段：行驶部分按平时能耗估算，其余算静置
+    drive_part: Optional[float] = None
+    drive_base100: Optional[float] = None
     record_ids: list = field(default_factory=list)
 
     @property
@@ -134,6 +137,13 @@ class Segment:
     @property
     def days(self) -> float:
         return max((self.end_ts - self.start_ts).total_seconds() / 86400.0, 0.0)
+
+    @property
+    def idle_amount(self) -> Optional[float]:
+        """静置部分的消耗；未拆分时整段都算静置。"""
+        if self.amount is None:
+            return None
+        return max(self.amount - (self.drive_part or 0.0), 0.0)
 
     @property
     def valid(self) -> bool:

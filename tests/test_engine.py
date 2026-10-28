@@ -4,9 +4,11 @@ from datetime import date, datetime
 import pytest
 
 from app.engine.aggregate import (
+    Exp,
     combined_totals,
     energy_totals,
     latest_energy,
+    latest_pair,
     mileage,
     odo_observations,
     period_report,
@@ -333,3 +335,85 @@ def test_mileage_spreads_gap_between_records():
     assert mileage(obs, date(2026, 3, 1), date(2026, 3, 31)) == 100
     # 录错的回退里程不会算成负数
     assert mileage([(datetime(2026, 1, 1), 100.0), (datetime(2026, 1, 2), 90.0)], date(2026, 1, 1), date(2026, 1, 31)) == 0
+
+
+# ---------- 标成静置的段、跨月分摊、保险摊销、首页同区间 ----------
+
+
+def example_tagged_idle():
+    """三段正常行驶 20kWh/100km，第四段 100km 用了 30kWh（哨兵开着），被标成静置。"""
+    recs = []
+    soc, odo = 90, 1000
+    for i, (km_, drop) in enumerate([(100, 25), (100, 25), (100, 25), (100, 37.5)]):
+        recs.append(snap(2 * i + 1, f"2026-06-{i * 5 + 1:02d}T08:00", odo, soc=soc))
+        odo += km_
+        recs.append(snap(2 * i + 2, f"2026-06-{i * 5 + 5:02d}T08:00", odo, soc=soc - drop))
+    return recs
+
+
+def test_tagged_idle_with_mileage_splits_drive_part():
+    params = VehicleParams(energy_type="bev", battery_kwh=80)
+    led = build_ledger(params, example_tagged_idle(), marks={(8, "elec"): Mark(tag="idle")})
+    seg = [s for s in led.elec_segments if s.end_id == 8][0]
+    assert seg.kind == "idle"
+    k = led.calib.k
+    # 行驶 100km 按平时 25% × k 估算，多出的 12.5% × k 算静置
+    assert seg.drive_part == pytest.approx(25 * k, abs=0.01)
+    assert seg.idle_amount == pytest.approx(12.5 * k, abs=0.01)
+    t = energy_totals(led.elec_segments)
+    assert t["drive"]["distance"] == 400 and t["drive"]["per100"] == pytest.approx(25 * k, abs=0.01)
+    assert t["idle"]["amount"] == pytest.approx(12.5 * k, abs=0.01)
+    assert t["overall"]["amount"] == pytest.approx(112.5 * k, abs=0.01)
+
+
+def test_tagged_idle_excluded_drops_drive_part():
+    params = VehicleParams(energy_type="bev", battery_kwh=80)
+    led = build_ledger(params, example_tagged_idle(), marks={(8, "elec"): Mark(tag="idle", excluded=True)})
+    t = energy_totals(led.elec_segments)
+    assert t["drive"]["distance"] == 300
+    assert t["idle"]["amount"] == pytest.approx(12.5 * led.calib.k, abs=0.01)
+
+
+def test_segment_spanning_months_is_prorated_by_mileage():
+    recs = [
+        charge(1, "2026-07-20T08:00", 1000, 20, 100, 16.0, 500),
+        snap(2, "2026-08-01T00:00", 1100, None),
+        charge(3, "2026-08-20T08:00", 1500, 20, 100, 16.0, 500),
+    ]
+    params = VehicleParams(energy_type="bev", battery_kwh=20)
+    led = build_ledger(params, recs)
+    [seg] = [s for s in led.elec_segments if s.kind == "drive"]
+    obs = odo_observations(led, [])
+    jul = energy_totals(led.elec_segments, date(2026, 7, 1), date(2026, 7, 31), obs)["drive"]
+    aug = energy_totals(led.elec_segments, date(2026, 8, 1), date(2026, 8, 31), obs)["drive"]
+    # 500km 的段里 7 月 100km、8 月 400km，能耗按里程拆开，每百公里不变
+    assert jul["distance"] == pytest.approx(100) and aug["distance"] == pytest.approx(400)
+    assert jul["per100"] == pytest.approx(seg.per100, abs=0.01)
+    assert jul["amount"] + aug["amount"] == pytest.approx(seg.amount, abs=0.01)
+
+
+def test_insurance_amortized_in_cost_per_km():
+    led = build_ledger(VehicleParams(**PHEV), example_a())
+    ins = Exp(1, "insurance", dt("2026-09-01T10:00"), 365_00, period_start=date(2026, 9, 1), period_end=date(2027, 8, 31))
+    rep = period_report(led, [ins], date(2026, 9, 1), date(2026, 9, 30))
+    # 现金口径全额计入，每公里总成本只摊 30 天：365 元 × 30/365 = 30 元
+    assert rep["total_cents"] == rep["energy_cents"] + 365_00
+    assert rep["amortized_cents"] == rep["energy_cents"] + 30_00
+    assert rep["total_cost_per_km"] == pytest.approx(rep["amortized_cents"] / 100 / rep["mileage"], abs=0.001)
+
+
+def test_latest_pair_uses_same_interval_when_no_combined_segment():
+    """提车加了一次不满的油，之后只充电、没有油表读数：没有综合段，油电都按提车至今同一区间算。"""
+    recs = [
+        snap(1, "2026-05-01T10:00", 10, soc=80, fuel_pct=10, tag="delivery"),
+        fuel(2, "2026-05-01T10:05", 10, 30.0, 22500, full=False),
+        charge(3, "2026-07-01T20:00", 900, 20, 100, 15.0, 1500),
+        snap(4, "2026-10-20T09:00", 1740, soc=50),
+    ]
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    assert not [s for s in led.combined_segments if s.status == "ok"]
+    p = latest_pair(led)
+    assert p["quality"] == "C" and p["scope"] in ("delivery", "ledger")
+    f = rough_best(led, "fuel")
+    assert p["per100"] == f["per100"] and p["distance"] == f["distance"]
+    assert p["elec_kwh"] is not None and p["equiv_per100"] is not None

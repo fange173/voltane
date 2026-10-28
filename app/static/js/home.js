@@ -6,7 +6,7 @@ import { listen, openQuickAdd, resetView, setAside, setNav, setTitle, view } fro
 import { canEdit, currentVehicle, emit, pref, savePref, state } from "./state.js";
 import { bindRows, itemRow, openDetail } from "./records.js";
 import { reminderRow } from "./reminders.js";
-import { avatar, bindSegmented, changeTag, emptyState, qTag, skeleton, toast, toastError } from "./ui.js";
+import { MIN_CENTS, MIN_KM, avatar, bindSegmented, changeTag, emptyState, helpTip, qTag, skeleton, toast, toastError } from "./ui.js";
 import { $, $$, ago, api, durationText, esc, fixed, fmtDate, html, km, money, num, parseLocal, raw } from "./util.js";
 
 const RANGES = [["month", "本月"], ["30d", "近30天"], ["year", "今年"], ["all", "全部"]];
@@ -55,6 +55,8 @@ function welcome(el) {
 function render(el, v, d, reload) {
   const p = d.period;
   const prev = d.prev;
+  // 上期里程太少时每公里成本的环比没有参考意义
+  const prevCpk = (k) => (prev && prev.mileage >= MIN_KM ? prev[k] : null);
   const editable = canEdit(v);
   el.innerHTML = String(html`
     ${d.in_progress.map((r) => chargingCard(r))}
@@ -65,12 +67,12 @@ function render(el, v, d, reload) {
           <div class="segmented range-seg" id="range-seg">${RANGES.map(([k, l]) => html`<button data-v="${k}" class="${k === d.range.key ? "on" : ""}">${l}</button>`)}</div>
         </div>
         <div class="kpi-grid">
-          ${kpi("里程", km(p.mileage), "km", changeTag(p.mileage, prev?.mileage, { neutral: true }), "road")}
-          ${kpi("总花费", money(p.total_cents, { digits: p.total_cents >= 1000000 ? 0 : 2 }), "", changeTag(p.total_cents, prev?.total_cents), "wallet", p.summary_cents ? "含汇总分摊" : "")}
+          ${kpi("里程", km(p.mileage), "km", changeTag(p.mileage, prev?.mileage, { neutral: true, min: MIN_KM }), "road")}
+          ${kpi("总花费", money(p.total_cents, { digits: p.total_cents >= 1000000 ? 0 : 2 }), "", changeTag(p.total_cents, prev?.total_cents, { min: MIN_CENTS }), "wallet", p.summary_cents ? "含汇总分摊" : "")}
           ${v.has_fuel ? kpi("加油", num(p.fuel_l, 1), "L", raw(`<span class="tiny muted">${p.fuel_count} 次 · ${money(p.fuel_cents)}</span>`), "fuel", "", "fuel") : ""}
           ${v.has_elec ? kpi("充电", num(p.elec_kwh, 0), "kWh", raw(`<span class="tiny muted">${p.elec_count} 次${p.home_share != null ? ` · 家充 ${num(p.home_share * 100, 0)}%` : ""}</span>`), "bolt", "", "elec") : ""}
-          ${kpi("每公里能源", p.energy_cost_per_km != null ? "¥" + fixed(p.energy_cost_per_km) : "–", "", changeTag(p.energy_cost_per_km, prev?.energy_cost_per_km), "coin")}
-          ${kpi("每公里总成本", p.total_cost_per_km != null ? "¥" + fixed(p.total_cost_per_km) : "–", "", changeTag(p.total_cost_per_km, prev?.total_cost_per_km), "receipt")}
+          ${kpi("每公里能源", p.energy_cost_per_km != null ? "¥" + fixed(p.energy_cost_per_km) : "–", "", changeTag(p.energy_cost_per_km, prevCpk("energy_cost_per_km")), "coin")}
+          ${kpi("每公里总成本", p.total_cost_per_km != null ? "¥" + fixed(p.total_cost_per_km) : "–", "", changeTag(p.total_cost_per_km, prevCpk("total_cost_per_km")), "receipt", "", "", HELP_CPK)}
         </div>
         ${editable ? quickRow(v) : ""}
       </div>
@@ -122,9 +124,12 @@ function chargingCard(r) {
     <button class="btn btn-sm" data-finish="${r.id}">结束充电</button></div>`;
 }
 
-function kpi(label, value, unit, delta, ico, sub = "", tone = "") {
+const HELP_CPK = "花费 ÷ 里程。保险按保险期间（没填就按一年）按天摊销，只算落在这段时间里的部分；「总花费」仍按实际付款计。";
+const HELP_EQUIV = "油和电取同一区间：油耗 + 电耗 ÷ 8.9（1 L 汽油约等于 8.9 kWh 电）就是折合油耗，能直接和燃油车比较。";
+
+function kpi(label, value, unit, delta, ico, sub = "", tone = "", help = "") {
   return html`<div class="kpi card ${tone}">
-    <div class="kpi-label">${raw(icon(ico, 16))}${label}</div>
+    <div class="kpi-label">${raw(icon(ico, 16))}${label}${help ? helpTip(help) : ""}</div>
     <div class="kpi-value num">${value}<small>${unit}</small></div>
     <div class="kpi-foot">${delta || ""}${sub ? html`<span class="tiny muted">${sub}</span>` : ""}</div></div>`;
 }
@@ -141,7 +146,8 @@ function quickRow(v) {
 /* ---------- 最近能耗 ---------- */
 
 function bigNum(value, unit, tone, q, err) {
-  return html`<div class="big ${tone}"><span class="big-ico">${raw(icon(tone === "fuel" ? "fuel" : "bolt", 18))}</span>
+  const ico = { fuel: "fuel", elec: "bolt", combined: "gauge" }[tone];
+  return html`<div class="big ${tone}"><span class="big-ico">${raw(icon(ico, 18))}</span>
     <span class="big-val num">${value != null ? num(value) : "–"}</span><span class="big-unit">${unit}<br>/100km</span>${qTag(q, err)}</div>`;
 }
 
@@ -167,14 +173,25 @@ function heroCard(v, d) {
   let hintKind = null;
   if (v.has_fuel && v.has_elec) {
     const c = L.combined;
-    if (c && c.quality === "A") {
-      body = html`<div class="big-pair">${bigNum(c.per100, "L", "fuel", "A")}${bigNum(c.elec_per100, "kWh", "elec", c.elec_quality === "A" ? "A" : "B")}</div>`;
+    if (c && c.per100 != null) {
+      // 油电同一区间，主数字是折合油耗
+      const range = c.low100 != null ? ` (${num(c.low100)}–${num(c.high100)})` : "";
+      body = html`<div class="big-pair">${bigNum(c.equiv_per100 ?? c.per100, "L 折合", "combined", c.quality)}
+        <div class="big-side"><div><span class="muted tiny">油</span><b class="num fuel-c">${num(c.per100)}<small>L${range}</small></b></div>
+          <div><span class="muted tiny">电</span><b class="num elec-c">${c.elec_per100 != null ? num(c.elec_per100) : "–"}<small>kWh</small></b></div></div></div>`;
       foot = [
         c.cost_per_km != null && html`<span><b class="num">¥${fixed(c.cost_per_km)}</b>/km</span>`,
-        c.equiv_per100 != null && html`<span>等效 <b class="num">${num(c.equiv_per100)}</b> L</span>`,
         c.elec_share != null && html`<span>电能 <b class="num">${num(c.elec_share * 100, 0)}%</b></span>`,
+        html`<span class="tiny muted">同一区间 ${km(c.distance)} km${helpTip(HELP_EQUIV)}</span>`,
       ];
-      d._scope = `满到满 · ${km(c.distance)}km · ${fmtDate(c.end_ts)}`;
+      d._scope = c.scope === "segment"
+        ? `${c.quality === "A" ? "满到满" : "油表读数之间"} · ${fmtDate(c.end_ts)}`
+        : `粗略 · ${c.scope === "delivery" ? "提车至今" : "记账以来"}`;
+      const f = L.fuel;
+      if (c.quality === "C" && f?.hint) {
+        hint = HINT[f.hint];
+        hintKind = "fuel";
+      }
     } else {
       const f = L.fuel;
       const e = L.elec;

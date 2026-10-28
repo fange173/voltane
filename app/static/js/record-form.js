@@ -1043,7 +1043,8 @@ function afterSave(res, record, startOnly) {
     toast("已记下开始充电", { sub: "拔枪后在首页「充电中」卡片里补结束" });
     return;
   }
-  const segs = res.segments || [];
+  const all = res.segments || [];
+  const segs = all.filter((s) => s.kind === "drive");
   const seg = segs.find((s) => s.energy === "combined") || segs.find((s) => s.energy === "fuel") || segs.find((s) => s.energy === "elec");
   const actions = [];
   if (!record) {
@@ -1053,12 +1054,13 @@ function afterSave(res, record, startOnly) {
       toast("已撤销");
     } });
   }
-  const elec = segs.find((s) => s.energy === "elec");
-  if (elec && (elec.distance < 5 || elec.anomaly === "parked")) {
+  // 只在这段里程基本没动时提示（不足 1km 的段已自动算静置）
+  const elec = all.find((s) => s.energy === "elec" && s.kind === "short" && s.distance < 5);
+  if (elec) {
     actions.push({ label: "标记静置", onClick: async () => {
       await api("/api/segments", { method: "PATCH", body: { vehicle_id: r.vehicle_id, end_record_id: r.id, energy: "elec", tag: "idle" } });
       emit("data-changed");
-      toast("已把这段标记为静置，不计入行驶能耗");
+      toast("已把这段标记为静置", { sub: "行驶的几公里按平时电耗估算，其余算静置损耗" });
     } });
   }
   if (!seg) {

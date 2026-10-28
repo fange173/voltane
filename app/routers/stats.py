@@ -21,6 +21,7 @@ from app.engine.aggregate import (
     delivery_index,
     energy_totals,
     latest_energy,
+    latest_pair,
     mileage,
     month_bounds,
     months_between,
@@ -112,15 +113,17 @@ def overview(vehicle_id: int, range: str = "month", user: User = Depends(get_cur
     d0, d1, p0, p1 = resolve_range(range, None, None, data_span(led, exps))
     rep = period_report(led, exps, d0, d1, v.initial_odometer_km)
     prev = period_report(led, exps, p0, p1, v.initial_odometer_km) if p0 else None
+    obs = odo_observations(led, exps)
     latest = {}
     if led.params.has_fuel:
         latest["fuel"] = latest_energy(led, "fuel")
     if led.params.has_elec:
         latest["elec"] = latest_energy(led, "elec")
-        latest["elec_totals"] = energy_totals(led.elec_segments, d0, d1)
-    combined = [s for s in led.combined_segments if s.status == "ok" and s.elec_kwh is not None]
-    if combined:
-        latest["combined"] = segment_dict(combined[-1], led.params.kwh_per_l)
+        latest["elec_totals"] = energy_totals(led.elec_segments, d0, d1, obs)
+    if led.params.has_fuel and led.params.has_elec:
+        pair = latest_pair(led)
+        if pair:
+            latest["combined"] = pair
     in_progress = db.scalars(select(Record).where(Record.vehicle_id == v.id, Record.status == "in_progress",
                                                   Record.deleted_at.is_(None)).order_by(Record.occurred_at.desc()))
     recent = list(db.scalars(select(Record).where(Record.vehicle_id == v.id, Record.deleted_at.is_(None),
@@ -135,7 +138,6 @@ def overview(vehicle_id: int, range: str = "month", user: User = Depends(get_cur
     items = items[:4]
     _attach_users(db, items)
     reminders = [r for r in collect_reminders(db, user, v.id) if r["status"] != "inactive"][:3]
-    obs = odo_observations(led, exps)
     return {
         "vehicle": vehicle_dict(v, role),
         "range": {"key": range, "from": d0.isoformat(), "to": d1.isoformat()},
@@ -171,6 +173,12 @@ def _months(d0: date, d1: date) -> list:
     return [month_bounds(y, m) for y, m in months_between(d0, d1)]
 
 
+def _clamp_from(date_from: Optional[date], first: date) -> date:
+    """范围起点不早于有数据的第一个月，图表不画前面的空月份。"""
+    start = first.replace(day=1)
+    return max(date_from, start) if date_from else first
+
+
 @router.get("/energy")
 def energy(vehicle_id: int, date_from: Optional[date] = None, date_to: Optional[date] = None,
            user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -180,8 +188,9 @@ def energy(vehicle_id: int, date_from: Optional[date] = None, date_to: Optional[
     span = data_span(led, exps)
     if not span:
         return {"months": [], "segments": {}, "charging": None, "calibration": None}
-    d0 = date_from or span[0]
+    d0 = _clamp_from(date_from, span[0])
     d1 = date_to or max(span[1], _today())
+    obs = odo_observations(led, exps)
     months = []
     for m0, m1 in _months(d0, d1):
         rep = period_report(led, exps, m0, m1, v.initial_odometer_km)
@@ -200,8 +209,8 @@ def energy(vehicle_id: int, date_from: Optional[date] = None, date_to: Optional[
         "combined": [segment_dict(s, led.params.kwh_per_l) for s in led.combined_segments if in_range(s)],
     }
     totals = {
-        "fuel": energy_totals(led.fuel_segments, d0, d1) if led.params.has_fuel else None,
-        "elec": energy_totals(led.elec_segments, d0, d1) if led.params.has_elec else None,
+        "fuel": energy_totals(led.fuel_segments, d0, d1, obs) if led.params.has_fuel else None,
+        "elec": energy_totals(led.elec_segments, d0, d1, obs) if led.params.has_elec else None,
     }
     charging = None
     if led.params.has_elec:
@@ -256,7 +265,7 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
             spans.append(s)
     if not spans:
         return {"months": [], "categories": [], "total_cents": 0}
-    d0 = date_from or min(s[0] for s in spans)
+    d0 = _clamp_from(date_from, min(s[0] for s in spans))
     d1 = date_to or max(max(s[1] for s in spans), _today())
     months = []
     cum = 0
@@ -281,10 +290,12 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
     places = defaultdict(lambda: {"count": 0, "qty": 0.0, "cents": 0, "kind": None})
     prices = {"fuel": [], "elec": []}
     total_km = 0.0
+    amort = 0
     from app.engine.aggregate import cash_and_qty
 
     for v, led, exps in ctx:
         cq = cash_and_qty(led, exps, d0, d1)
+        amort += cq["amortized_cents"]
         total_km += period_report(led, exps, d0, d1, v.initial_odometer_km)["mileage"]
         cats["fuel"]["cents"] += cq["fuel_cents"]
         cats["fuel"]["count"] += cq["fuel_count"]
@@ -327,7 +338,8 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
     return {
         "from": d0.isoformat(), "to": d1.isoformat(), "months": months, "categories": cat_list,
         "total_cents": total, "mileage": round(total_km, 1),
-        "cost_per_km": round(total / 100 / total_km, 3) if total_km >= 1 else None,
+        "cost_per_km": round(amort / 100 / total_km, 3) if total_km >= 1 else None,
+        "amortized_cents": amort,
         "places": place_list[:20], "prices": prices,
     }
 

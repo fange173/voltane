@@ -127,7 +127,8 @@ def load_expenses(db: Session, vehicle_id: int) -> list[Exp]:
     rows = db.scalars(
         select(Expense).where(Expense.vehicle_id == vehicle_id, Expense.deleted_at.is_(None))
     )
-    return [Exp(e.id, e.category, e.occurred_at, e.amount_cents, e.odometer_km) for e in rows]
+    return [Exp(e.id, e.category, e.occurred_at, e.amount_cents, e.odometer_km, e.period_start, e.period_end)
+            for e in rows]
 
 
 # ---------- 序列化 ----------

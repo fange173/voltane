@@ -60,6 +60,10 @@
   background: var(--elec-soft);
   color: var(--elec-strong);
 }
+.big.combined .big-ico {
+  background: var(--surface-2);
+  color: var(--fg-2);
+}
 .big-val {
   font-size: 44px;
   font-weight: 700;

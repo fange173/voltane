@@ -15,7 +15,7 @@ import {
   gradeLabel,
   state,
 } from "./state.js";
-import { avatar, confirmDialog, emptyState, qTag, sheet, skeleton, toast, toastError } from "./ui.js";
+import { avatar, confirmDialog, emptyState, helpTip, qTag, sheet, skeleton, toast, toastError } from "./ui.js";
 import { $, $$, api, debounce, esc, fixed, fmtDate, html, km, money, num, raw, relDay } from "./util.js";
 
 /* ---------- 条目 ---------- */
@@ -64,7 +64,7 @@ export function itemRow(it, { showDate = true } = {}) {
   const cents = it.amount_cents;
   const tags = [];
   if (it.kind === "fuel" && it.fuel_is_full) tags.push(html`<span class="badge fuel">满</span>`);
-  if (it.source === "backfill" || it.source === "import") tags.push(html`<span class="badge">补录</span>`);
+  if (it.source === "backfill" || it.source === "import") tags.push(raw(`<span class="src-ico" title="补录" aria-label="补录">${icon("history", 13)}</span>`));
   if (it.source === "auto_fix") tags.push(html`<span class="badge warn">自动补</span>`);
   if (it.pending) tags.push(html`<span class="badge warn">待同步</span>`);
   return html`<button class="list-item rec-row ${it.pending ? "pending" : ""}" data-type="${it.type}" data-id="${it.id ?? ""}">
@@ -129,6 +129,13 @@ export async function recordsPage() {
   bindRows($("#rec-list"));
   let items = [];
   let next = null;
+  // 月份里程用统计接口的口径（按里程表插值分摊），和概览、里程页一致
+  let monthKm = {};
+  const loadMonthKm = () => api(`/api/stats/mileage?vehicle_id=${v.id}`).then((r) => {
+    monthKm = Object.fromEntries((r.months || []).map((m) => [m.month, m.km]));
+    draw();
+  }).catch(() => {});
+  loadMonthKm();
   const load = async (reset = false) => {
     if (reset) {
       items = [];
@@ -172,19 +179,22 @@ export async function recordsPage() {
     }
     list.innerHTML = String(html`${[...groups].map(([m, arr]) => html`
       <section class="month-group">
-        <div class="month-head"><b>${m.replace("-", " 年 ")} 月</b><span>${monthSummary(arr)}</span></div>
+        <div class="month-head"><b>${m.replace("-", " 年 ")} 月</b><span>${monthSummary(arr, monthKm[m])}</span></div>
         <div class="card flush list">${arr.map((it) => itemRow(it))}</div>
       </section>`)}
       ${next ? html`<button class="btn btn-block btn-ghost" id="more">加载更多</button>` : html`<p class="end-mark">— 共 ${all.length} 条 —</p>`}`);
     $("#more")?.addEventListener("click", () => load());
   };
-  listen("data-changed", () => load(true));
+  listen("data-changed", () => {
+    load(true);
+    loadMonthKm();
+  });
   listen("outbox-changed", draw);
   listen("vehicle-changed", () => recordsPage());
   await load(true);
 }
 
-function monthSummary(arr) {
+function monthSummary(arr, mk) {
   let cents = 0;
   let fuel = 0;
   let kwh = 0;
@@ -198,7 +208,9 @@ function monthSummary(arr) {
   const parts = [money(cents)];
   if (fuel) parts.push(num(fuel, 1) + "L");
   if (kwh) parts.push(num(kwh, 0) + "kWh");
-  if (odos.length > 1) parts.push(km(Math.max(...odos) - Math.min(...odos)) + "km");
+  if (mk != null) {
+    if (mk > 0) parts.push(km(mk) + "km");
+  } else if (odos.length > 1) parts.push(km(Math.max(...odos) - Math.min(...odos)) + "km");
   return parts.join(" · ");
 }
 
@@ -319,7 +331,7 @@ function segmentCard(s, d, v) {
   const head = s.status !== "ok"
     ? html`<span class="badge warn">${{ missed: "有漏记，未计算", negative: "数据异常（消耗为负）", incomplete: "期间有汇总补能，不单独计算", uncertain: "误差太大，不显示" }[s.status] || "无法计算"}</span>`
     : s.kind === "idle"
-      ? html`<b class="num seg-big">${num(s.amount)} <small>kWh</small></b><span class="muted small">${num(s.days, 1)} 天 · ${num(s.per_day)} kWh/天</span>`
+      ? html`<b class="num seg-big">${num(s.idle_amount ?? s.amount)} <small>kWh</small></b><span class="muted small">${num(s.days, 1)} 天 · ${num(s.per_day)} kWh/天</span>${helpTip(IDLE_HELP)}`
       : isComb
         ? html`<b class="num seg-big fuel-c">${num(s.per100)} <small>L</small></b><b class="num seg-big elec-c">${s.elec_per100 != null ? num(s.elec_per100) : "–"} <small>kWh</small></b><span class="muted small">/100km</span>`
         : html`<b class="num seg-big ${s.energy === "fuel" ? "fuel-c" : "elec-c"}">${num(s.per100)} <small>${unit}/100km</small></b>${qTag(s.quality, s.err100)}`;
@@ -330,6 +342,8 @@ function segmentCard(s, d, v) {
     return html`<div><b>${p.energy === "fuel" ? "油" : "电"}</b>：起点 ${p.start}（${fmtVal(p.start_value, p.unit)}）− 终点 ${p.end}（${fmtVal(p.end_value, p.unit)}）+ 期间补能 ${fmtVal(p.added, p.unit)} = <b>${fmtVal(p.amount, p.unit)}</b> ${kText}</div>`;
   });
   const canMark = d.can_edit && s.end_id != null;
+  // 里程几乎没动的段本来就只算静置，「不计入行驶能耗」对它没有意义
+  const pureIdle = s.kind === "idle" && s.distance < 1;
   return html`<div class="card seg-card ${s.energy}">
     <div class="row between"><span class="card-title">${title}</span><span class="tiny muted">${fmtDate(s.start_ts)} → ${fmtDate(s.end_ts)} · ${km(s.distance)} km</span></div>
     <div class="row wrap seg-head">${head}${s.anomaly ? html`<span class="badge warn">${{ high: "偏高", low: "偏低", parked: "疑似停放耗电", idle_high: "停车耗电偏高" }[s.anomaly]}</span>` : ""}</div>
@@ -337,11 +351,17 @@ function segmentCard(s, d, v) {
       ${s.cost_per_km != null ? html`<span>每公里 ¥${fixed(s.cost_per_km)}</span>` : ""}
       ${s.equiv_per100 != null ? html`<span>等效油耗 ${num(s.equiv_per100)} L</span>` : ""}
       ${s.elec_share != null ? html`<span>电能占比 ${num(s.elec_share * 100, 0)}%</span>` : ""}</div>` : ""}
-    ${parts.length ? html`<div class="formula">${formula}<div>÷ ${km(s.distance)} km × 100</div></div>` : ""}
+    ${parts.length ? html`<div class="formula">${formula}${s.kind === "idle" ? "" : html`<div>÷ ${km(s.distance)} km × 100</div>`}</div>` : ""}
     ${canMark ? html`<div class="seg-marks" data-energy="${s.energy}" data-end="${s.end_id}">
       <div class="chips wrap">${Object.entries(SEGMENT_TAGS).map(([k, l]) => html`<button class="chip sm ${s.tag === k ? "on" : ""}" data-tag="${k}">${l}</button>`)}</div>
-      <label class="mini-check"><input type="checkbox" data-excl ${s.excluded ? "checked" : ""}> 不计入行驶能耗（仍计入综合能耗和花费）</label></div>` : ""}
+      <label class="mini-check" ${pureIdle ? "hidden" : ""}><input type="checkbox" data-excl ${s.excluded ? "checked" : ""}> <span data-excl-text>${exclText(s.tag)}</span></label></div>` : ""}
   </div>`;
+}
+
+const IDLE_HELP = "停着时掉的电（哨兵、空调、自放电）。标成「哨兵/静置」但这段有行驶里程时，按你平时的行驶电耗估出行驶部分，剩下的才算静置。";
+
+function exclText(tag) {
+  return tag === "idle" ? "行驶部分也不计入行驶能耗（仍计入综合能耗）" : "不计入行驶能耗（仍计入综合能耗和花费）";
 }
 
 function bindSegmentMarks(body, d, v) {
@@ -359,6 +379,7 @@ function bindSegmentMarks(body, d, v) {
       const c = e.target.closest("[data-tag]");
       if (!c) return;
       $$("[data-tag]", box).forEach((x) => x.classList.toggle("on", x === c));
+      $("[data-excl-text]", box).textContent = exclText(c.dataset.tag);
       send(c.dataset.tag, $("[data-excl]", box).checked);
     });
     $("[data-excl]", box).addEventListener("change", (e) => send($("[data-tag].on", box)?.dataset.tag || "normal", e.target.checked));

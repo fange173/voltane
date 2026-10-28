@@ -79,6 +79,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.src-ico {
+  display: inline-grid;
+  place-items: center;
+  color: var(--fg-faint);
+  flex-shrink: 0;
+}
 .rec-sub {
   display: block;
   font-size: 12px;

@@ -194,4 +194,9 @@ def explain(led: Ledger, s: Segment, v: Optional[Vehicle] = None) -> dict:
             "unit": unit,
             "k": led.calib.k if energy == "elec" else None,
         })
+    if s.drive_part is not None:
+        u = "L" if s.energy == "fuel" else "kWh"
+        parts.append({"energy": s.energy, "text": (
+            f"其中行驶 {fmt_num(s.distance)}km × 平时 {fmt_num(s.drive_base100)}{u}/100km ≈ {fmt_num(s.drive_part)}{u}"
+            f"，其余 {fmt_num(s.idle_amount)}{u} 算静置"), "amount": round(s.idle_amount, 2)})
     return {"distance": s.distance, "parts": parts}

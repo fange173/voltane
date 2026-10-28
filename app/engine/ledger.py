@@ -23,7 +23,9 @@ ANOMALY_MIN_BASE = 3
 ANOMALY_HIGH = 1.5
 ANOMALY_LOW = 0.5
 PARKED_MIN_DAYS = 2.0
-PARKED_KM_PER_DAY = 5.0
+PARKED_KM_PER_DAY = 2.0
+# 估算标成静置的段的行驶部分：参考最近多少段正常行驶段的中位数
+DRIVE_BASE_SEGS = 20
 # 静置耗电异常：段至少半天、日均耗电至少 0.3 kWh 才判断
 IDLE_MIN_DAYS = 0.5
 IDLE_MIN_KWH_DAY = 0.3
@@ -466,6 +468,25 @@ def _apply_marks(segs: list[Segment], marks: dict, energy: str) -> None:
             s.kind = "idle"
 
 
+def _split_tagged_idle(segs: list[Segment]) -> None:
+    """标成静置但有行驶里程的段：行驶部分 = 里程 × 之前正常行驶段能耗的中位数（没有之前的就用全部），
+    其余算静置，避免把行驶耗能算成静置损耗。没有行驶基线时整段算静置。"""
+    base = [s.per100 for s in segs
+            if s.status == "ok" and s.kind == "drive" and s.tag == "normal" and not s.excluded and s.per100 is not None]
+    hist: list = []
+    for s in segs:
+        if s.status == "ok" and s.kind == "drive" and s.tag == "normal" and not s.excluded and s.per100 is not None:
+            hist.append(s.per100)
+            continue
+        if s.kind != "idle" or s.tag != "idle" or s.distance < IDLE_KM or s.amount is None or s.status != "ok":
+            continue
+        ref = hist[-DRIVE_BASE_SEGS:] or base[-DRIVE_BASE_SEGS:]
+        if not ref:
+            continue
+        s.drive_base100 = median(ref)
+        s.drive_part = min(s.amount, s.distance * s.drive_base100 / 100)
+
+
 def equiv_per100(s: Segment, kwh_per_l: float) -> Optional[float]:
     """综合段折合油耗：油 + 电按热值折成升。"""
     if s.amount is None or s.elec_kwh is None or s.distance < 1:
@@ -502,7 +523,7 @@ def _detect_idle_anomalies(segs: list[Segment]) -> None:
     for s in segs:
         if s.status != "ok" or s.kind != "idle" or s.amount is None or s.days < IDLE_MIN_DAYS:
             continue
-        v = s.amount / s.days
+        v = s.idle_amount / s.days
         if s.tag == "normal" and not s.excluded and len(history) >= ANOMALY_MIN_BASE:
             if v > median(history[-20:]) * ANOMALY_HIGH and v >= IDLE_MIN_KWH_DAY:
                 s.anomaly = "idle_high"
@@ -587,6 +608,8 @@ def build_ledger(
             if energy != "combined" and s.cost_cents is None:
                 s.cost_cents = _segment_cost(points, s._i, s._j, energy, s.amount) if s.status == "ok" else None
         _apply_marks(segs, marks, energy)
+        if energy != "combined":
+            _split_tagged_idle(segs)
         _detect_anomalies(segs, energy, energy != "combined" and params.has_fuel and params.has_elec, params.kwh_per_l)
         if energy == "elec":
             _detect_idle_anomalies(segs)

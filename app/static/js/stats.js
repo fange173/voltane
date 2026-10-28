@@ -5,7 +5,7 @@ import { navigate } from "./router.js";
 import { listen, resetView, setNav, setTitle, view } from "./shell.js";
 import { CHARGE_LABEL, EXPENSE_LABEL, SEGMENT_TAGS, currentVehicle, gradeLabel, pref, savePref, state } from "./state.js";
 import { bindRows, itemRow, openDetail } from "./records.js";
-import { bindSegmented, changeTag, emptyState, qTag, skeleton } from "./ui.js";
+import { MIN_CENTS, MIN_KM, bindSegmented, changeTag, emptyState, helpTip, qTag, skeleton } from "./ui.js";
 import { $, $$, api, esc, fixed, fmtDate, html, km, money, num, raw, todayISO } from "./util.js";
 
 const TABS = [["energy", "能耗"], ["cost", "花费"], ["mileage", "里程"], ["calendar", "日历"]];
@@ -64,8 +64,8 @@ async function energyTab(body, v) {
     <div class="row between" style="margin-bottom:12px">${rangeSeg("e-range", rk)}</div>
     <div class="kpi-grid">
       ${v.has_fuel ? energyKpi("行驶油耗", tot.fuel?.drive, "L", "fuel") : ""}
-      ${v.has_elec ? energyKpi("行驶电耗", tot.elec?.drive, "kWh", "elec") : ""}
-      ${v.has_elec ? energyKpi("综合电耗", tot.elec?.overall, "kWh", "elec", "含静置") : ""}
+      ${v.has_elec ? energyKpi("行驶电耗", tot.elec?.drive, "kWh", "elec", "", HELP.drive) : ""}
+      ${v.has_elec ? energyKpi("综合电耗", tot.elec?.overall, "kWh", "elec", "含静置", HELP.overall) : ""}
       ${v.has_elec ? idleKpi(tot.elec?.idle) : ""}
     </div>
     ${v.has_fuel ? html`<div class="card chart-card"><div class="card-head"><span class="card-title"><i class="lg-dot fuel"></i>油耗趋势</span><span class="card-sub">L/100km · 空心点为估算</span></div>
@@ -86,10 +86,13 @@ async function energyTab(body, v) {
     energyTab(body, v);
   });
   const lbl = (s) => fmtDate(s.end_ts);
-  if (v.has_fuel) lineChart($("#c-fuel", body), { labels: fuelT.map(lbl), series: [{ name: "油耗", color: "fuel", values: fuelT.map((s) => s.per100), hollow: fuelT.map((s) => s.quality !== "A") }], unit: " L", tipLabel: (i) => `${fmtDate(fuelT[i].start_ts)} → ${fmtDate(fuelT[i].end_ts)} · ${km(fuelT[i].distance)}km` });
-  if (v.has_elec) lineChart($("#c-elec", body), { labels: elecT.map(lbl), series: [{ name: "电耗", color: "elec", values: elecT.map((s) => s.per100), hollow: elecT.map((s) => s.quality !== "A") }], unit: " kWh", tipLabel: (i) => `${fmtDate(elecT[i].start_ts)} → ${fmtDate(elecT[i].end_ts)} · ${km(elecT[i].distance)}km` });
-  const months = d.months.filter((m) => m.mileage > 0);
-  lineChart($("#c-cpk", body), { labels: months.map((m) => m.month.slice(2).replace("-", "/")), series: [{ name: "每公里", color: "brand", values: months.map((m) => m.energy_cost_per_km) }], unit: " 元", fmt: (x) => (+x).toFixed(2) });
+  if (v.has_fuel && fuelT.length < 2) $("#c-fuel", body).innerHTML = trendEmpty(fuelT, "油耗", "两次加满之间");
+  else if (v.has_fuel) lineChart($("#c-fuel", body), { labels: fuelT.map(lbl), series: [{ name: "油耗", color: "fuel", values: fuelT.map((s) => s.per100), hollow: fuelT.map((s) => s.quality !== "A") }], unit: " L", tipLabel: (i) => `${fmtDate(fuelT[i].start_ts)} → ${fmtDate(fuelT[i].end_ts)} · ${km(fuelT[i].distance)}km` });
+  if (v.has_elec && elecT.length < 2) $("#c-elec", body).innerHTML = trendEmpty(elecT, "电耗", "两条带电量的记录之间");
+  else if (v.has_elec) lineChart($("#c-elec", body), { labels: elecT.map(lbl), series: [{ name: "电耗", color: "elec", values: elecT.map((s) => s.per100), hollow: elecT.map((s) => s.quality !== "A") }], unit: " kWh", tipLabel: (i) => `${fmtDate(elecT[i].start_ts)} → ${fmtDate(elecT[i].end_ts)} · ${km(elecT[i].distance)}km` });
+  const months = d.months.filter((m) => m.mileage > 0 && m.energy_cost_per_km != null);
+  if (months.length < 2) $("#c-cpk", body).innerHTML = `<div class="chart-empty">至少要有两个月的里程和花费才能画趋势</div>`;
+  else lineChart($("#c-cpk", body), { labels: months.map((m) => m.month.slice(2).replace("-", "/")), series: [{ name: "每公里", color: "brand", values: months.map((m) => m.energy_cost_per_km) }], unit: " 元", fmt: (x) => (+x).toFixed(2) });
   if (d.charging) {
     const types = d.charging.types.filter((t) => t.kwh > 0);
     const colors = ["elec", "brand", "fuel", "expense", "snapshot"];
@@ -104,14 +107,26 @@ async function energyTab(body, v) {
   body.querySelectorAll(".seg-row").forEach((b) => b.addEventListener("click", () => openDetail("record", +b.dataset.end)));
 }
 
-function energyKpi(label, t, unit, tone, sub = "") {
-  return html`<div class="kpi card ${tone}"><div class="kpi-label">${raw(icon(tone === "fuel" ? "fuel" : "bolt", 16))}${label}</div>
+const HELP = {
+  drive: "只算开车时的能耗：不含静置段，也不含你勾了「不计入行驶能耗」的段。跨月或跨范围的段按段内里程比例分摊。",
+  overall: "所有段合计的用电 ÷ 里程，包括停着时的耗电（哨兵、空调等），反映实际花掉的电。",
+  idle: "停车期间掉的电。里程几乎没动的段直接算静置；你标成「哨兵/静置」但有行驶里程的段，按平时的行驶电耗扣掉行驶部分，剩下的才算静置。",
+};
+
+/** 趋势点少于 2 个时画不成线，改成文字说明。 */
+function trendEmpty(list, name, how) {
+  const one = list[0];
+  return String(html`<div class="chart-empty">${one ? html`目前只有一段${name}：${num(one.per100)}（${fmtDate(one.start_ts)} → ${fmtDate(one.end_ts)}），再多一段就能看趋势` : html`还没有可用的${name}段，${how}就是一段`}</div>`);
+}
+
+function energyKpi(label, t, unit, tone, sub = "", help = "") {
+  return html`<div class="kpi card ${tone}"><div class="kpi-label">${raw(icon(tone === "fuel" ? "fuel" : "bolt", 16))}${label}${help ? helpTip(help) : ""}</div>
     <div class="kpi-value num">${t?.per100 != null ? num(t.per100) : "–"}<small>${unit}/100km</small></div>
     <div class="kpi-foot">${t ? html`<span class="tiny muted">${km(t.distance)} km${sub ? " · " + sub : ""}</span>${qTag(t.quality)}` : html`<span class="tiny muted">还没有可用的段</span>`}</div></div>`;
 }
 
 function idleKpi(idle) {
-  return html`<div class="kpi card"><div class="kpi-label">${raw(icon("gauge", 16))}静置损耗</div>
+  return html`<div class="kpi card"><div class="kpi-label">${raw(icon("gauge", 16))}静置损耗${helpTip(HELP.idle)}</div>
     <div class="kpi-value num">${idle ? num(idle.amount, 1) : "0"}<small>kWh</small></div>
     <div class="kpi-foot"><span class="tiny muted">${idle ? `${num(idle.per_day)} kWh/天 · 占 ${num((idle.share || 0) * 100, 1)}%` : "记「状态快照」后单独统计"}</span></div></div>`;
 }
@@ -138,12 +153,13 @@ function segList(v, d) {
   return all.map((s) => {
     const unit = s.energy === "fuel" ? "L" : "kWh";
     const val = s.status !== "ok" ? html`<span class="badge warn">${{ missed: "漏记", negative: "异常", incomplete: "含汇总", uncertain: "误差大" }[s.status] || "–"}</span>`
-      : s.kind === "idle" ? html`<b class="num">${num(s.amount)} kWh</b>` : html`<b class="num ${s.energy === "fuel" ? "fuel-c" : "elec-c"}">${num(s.per100)} ${unit}</b>`;
+      : s.kind === "idle" ? html`<b class="num">${num(s.idle_amount ?? s.amount)} kWh</b>` : html`<b class="num ${s.energy === "fuel" ? "fuel-c" : "elec-c"}">${num(s.per100)} ${unit}</b>`;
     const tags = [];
-    if (s.kind === "idle") tags.push(html`<span class="badge">静置 ${s.per_day != null ? num(s.per_day) + "/天" : ""}</span>`);
+    // 静置段只出一个徽章；只有拆出了行驶部分的段，「不计入行驶能耗」才有意义
+    if (s.kind === "idle") tags.push(html`<span class="badge">静置${s.per_day != null ? " " + num(s.per_day) + "/天" : ""}</span>`);
     if (s.kind === "short") tags.push(html`<span class="badge">短段</span>`);
-    if (s.tag !== "normal") tags.push(html`<span class="badge brand">${SEGMENT_TAGS[s.tag]}</span>`);
-    if (s.excluded) tags.push(html`<span class="badge">已排除</span>`);
+    if (s.tag !== "normal" && s.tag !== "idle") tags.push(html`<span class="badge brand">${SEGMENT_TAGS[s.tag]}</span>`);
+    if (s.excluded && (s.kind !== "idle" || s.drive_part != null)) tags.push(html`<span class="badge">已排除</span>`);
     if (s.anomaly) tags.push(html`<span class="badge warn">${{ high: "偏高", low: "偏低", parked: "停放", idle_high: "耗电偏高" }[s.anomaly]}</span>`);
     return html`<button class="list-item seg-row" data-end="${s.end_id}">
       <span class="ico sm ${s.energy === "fuel" ? "fuel" : "elec"}">${raw(icon(s.energy === "fuel" ? "fuel" : "bolt", 16))}</span>
@@ -172,7 +188,7 @@ async function costTab(body, v) {
       ${state.vehicles.length > 1 ? html`<div class="segmented" id="c-scope" style="width:200px"><button data-v="vehicle" class="${scope === "vehicle" ? "on" : ""}">当前车辆</button><button data-v="all" class="${scope === "all" ? "on" : ""}">全部车辆</button></div>` : ""}</div>
     <div class="kpi-grid">
       <div class="kpi card"><div class="kpi-label">${raw(icon("wallet", 16))}总花费</div><div class="kpi-value num">${money(d.total_cents, { digits: 0 })}</div><div class="kpi-foot"><span class="tiny muted">${d.from || ""} 起</span></div></div>
-      <div class="kpi card"><div class="kpi-label">${raw(icon("coin", 16))}每公里总成本</div><div class="kpi-value num">${d.cost_per_km != null ? "¥" + fixed(d.cost_per_km) : "–"}</div><div class="kpi-foot"><span class="tiny muted">${km(d.mileage)} km</span></div></div>
+      <div class="kpi card"><div class="kpi-label">${raw(icon("coin", 16))}每公里总成本${helpTip(HELP_CPK)}</div><div class="kpi-value num">${d.cost_per_km != null ? "¥" + fixed(d.cost_per_km) : "–"}</div><div class="kpi-foot"><span class="tiny muted">${km(d.mileage)} km</span></div></div>
     </div>
     <div class="card chart-card"><div class="card-head"><span class="card-title">月度花费</span><span class="card-sub">${hasSummary ? "浅色部分含历史汇总分摊" : "元"}</span></div>
       <div id="c-month" class="chart-box"></div>
@@ -228,6 +244,8 @@ async function costTab(body, v) {
   if (d.prices?.elec?.length > 1) priceChart("#c-pe", d.prices.elec, count(d.prices.elec), (k) => CHARGE_LABEL[k] || k);
 }
 
+const HELP_CPK = "所选范围内的花费 ÷ 里程。保险按保险期间（没填就按一年）按天摊销，只算落在这段时间里的部分；总花费和月度花费仍按实际付款计。";
+
 function catTone(key) {
   if (key === "fuel") return "fuel";
   if (key === "elec") return "elec";
@@ -252,7 +270,7 @@ async function mileageTab(body, v) {
     <div class="kpi-grid">
       <div class="kpi card"><div class="kpi-label">${raw(icon("gauge", 16))}当前里程</div><div class="kpi-value num">${km(d.latest_odo)}<small>km</small></div></div>
       <div class="kpi card"><div class="kpi-label">${raw(icon("road", 16))}本月</div><div class="kpi-value num">${km(thisMonth?.km)}<small>km</small></div>
-        <div class="kpi-foot">${changeTag(thisMonth?.km, months[months.length - 2]?.km, { neutral: true })}</div></div>
+        <div class="kpi-foot">${changeTag(thisMonth?.km, months[months.length - 2]?.km, { neutral: true, min: MIN_KM })}</div></div>
       <div class="kpi card"><div class="kpi-label">${raw(icon("route", 16))}最近日均</div><div class="kpi-value num">${num(d.recent_daily, 1)}<small>km</small></div><div class="kpi-foot"><span class="tiny muted">近 60 天</span></div></div>
       <div class="kpi card"><div class="kpi-label">${raw(icon("history", 16))}长期日均</div><div class="kpi-value num">${num(d.daily_avg, 1)}<small>km</small></div></div>
     </div>
@@ -317,10 +335,10 @@ async function calendarTab(body, v) {
           <div class="card-head"><span class="card-title">${raw(icon("sparkle", 18))}${m} 月月报</span><a class="link-btn" data-link href="/stats/year/${y}">${y} 年度报告 ›</a></div>
           <p class="report-sentence">${d.report.sentence}</p>
           <div class="report-grid">
-            ${repItem("里程", km(rep.mileage) + " km", changeTag(rep.mileage, prev.mileage, { neutral: true }))}
-            ${repItem("能源花费", money(rep.energy_cents), changeTag(rep.energy_cents, prev.energy_cents))}
-            ${repItem("其他花费", money(rep.other_cents), changeTag(rep.other_cents, prev.other_cents))}
-            ${repItem("每公里能源", rep.energy_cost_per_km != null ? "¥" + fixed(rep.energy_cost_per_km) : "–", changeTag(rep.energy_cost_per_km, prev.energy_cost_per_km))}
+            ${repItem("里程", km(rep.mileage) + " km", changeTag(rep.mileage, prev.mileage, { neutral: true, min: MIN_KM }))}
+            ${repItem("能源花费", money(rep.energy_cents), changeTag(rep.energy_cents, prev.energy_cents, { min: MIN_CENTS }))}
+            ${repItem("其他花费", money(rep.other_cents), changeTag(rep.other_cents, prev.other_cents, { min: MIN_CENTS }))}
+            ${repItem("每公里能源", rep.energy_cost_per_km != null ? "¥" + fixed(rep.energy_cost_per_km) : "–", changeTag(rep.energy_cost_per_km, prev.mileage >= MIN_KM ? prev.energy_cost_per_km : null))}
             ${v.has_fuel ? repItem("加油", `${rep.fuel_count} 次 · ${num(rep.fuel_l, 1)} L`) : ""}
             ${v.has_elec ? repItem("充电", `${rep.elec_count} 次 · ${num(rep.elec_kwh, 0)} kWh`) : ""}
             ${v.has_fuel && rep.fuel?.drive ? repItem("平均油耗", num(rep.fuel.drive.per100) + " L") : ""}

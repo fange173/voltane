@@ -203,6 +203,10 @@ def _segment_preview(db: Session, v: Vehicle, rid: int) -> list[dict]:
             prev = valid[i - 1] if i > 0 else None
             d["prev_per100"] = round(prev.per100, 2) if prev and prev.per100 else None
             out.append(d)
+    # 里程基本没动（不足 5km）的短电段也带上，前端据此提示「标记静置」，不当作本段能耗展示
+    for s in led.elec_segments:
+        if s.end_id == rid and s.status == "ok" and s.kind == "short" and s.distance < 5:
+            out.append(segment_dict(s, led.params.kwh_per_l))
     return out
 
 
@@ -414,7 +418,7 @@ def _badges(led) -> dict:
                 continue
             d = {"energy": energy, "per100": round(s.per100, 2) if s.per100 is not None else None,
                  "quality": s.quality, "kind": s.kind, "anomaly": s.anomaly, "tag": s.tag, "excluded": s.excluded,
-                 "per_day": round(s.amount / s.days, 2) if s.kind == "idle" and s.amount and s.days > 0 else None}
+                 "per_day": round(s.idle_amount / s.days, 2) if s.kind == "idle" and s.amount and s.days > 0 else None}
             out.setdefault(s.end_id, []).append(d)
     # 综合段只在有异常时出徽章，数值用折合油耗
     for s in led.combined_segments:

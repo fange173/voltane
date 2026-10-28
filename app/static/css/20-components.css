@@ -783,3 +783,41 @@ a.list-item:hover {
   animation: shimmer 1.2s infinite;
   border-radius: 12px;
 }
+
+/* 问号说明 */
+.help-tip {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 2px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.help-tip:hover {
+  color: var(--fg);
+}
+.help-pop {
+  position: fixed;
+  z-index: 1000;
+  max-width: min(300px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-1);
+  color: var(--fg-2);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-2);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.6;
+  pointer-events: none;
+}
