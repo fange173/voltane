@@ -41,7 +41,7 @@ from app.database import (
     set_setting,
 )
 from app.routers.auth import USERNAME_RE
-from app.services import CHARGE_LABEL, bump, iso, log_activity, record_dict, summary_dict, vehicle_dict
+from app.services import CHARGE_LABEL, bump, iso, log_activity, record_dict, seal_legacy_segment_marks, summary_dict, vehicle_dict
 
 router = APIRouter(prefix="/api", tags=["admin"])
 
@@ -345,6 +345,7 @@ async def import_json(vehicle_id: int, file: UploadFile = File(...), user: User 
         raise HTTPException(400, "只支持导入本应用导出的 JSON")
     batch = secrets.token_hex(6)
     cols = {c.name for c in Record.__table__.columns}
+    seal_legacy_segment_marks(db, v)
     n_rec = n_exp = 0
     for r in data.get("records", []):
         if r.get("status") == "in_progress" or r.get("kind") not in RECORD_KINDS or not r.get("occurred_at"):
@@ -385,6 +386,7 @@ async def import_json(vehicle_id: int, file: UploadFile = File(...), user: User 
 @router.delete("/import/{batch}")
 def undo_import(batch: str, vehicle_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     v, _ = require_vehicle(db, user, vehicle_id, "owner")
+    seal_legacy_segment_marks(db, v)
     a = db.execute(delete(Record).where(Record.vehicle_id == v.id, Record.import_batch_id == batch)).rowcount
     b = db.execute(delete(Expense).where(Expense.vehicle_id == v.id, Expense.import_batch_id == batch)).rowcount
     bump(v)

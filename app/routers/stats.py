@@ -45,18 +45,30 @@ def _today() -> date:
     return localnow().date()
 
 
+def _elapsed_month(year: int, month: int, today: date) -> tuple:
+    start, end = month_bounds(year, month)
+    previous_end = start - timedelta(days=1)
+    previous_start = previous_end.replace(day=1)
+    if start <= today <= end:
+        end = today
+        previous_end = min(previous_end, previous_start + (end - start))
+    return start, end, previous_start, previous_end
+
+
 def resolve_range(rng: str, d_from: Optional[date], d_to: Optional[date], span: Optional[tuple]) -> tuple:
     """返回 (d0, d1, prev_d0, prev_d1)；prev 用于和上一周期对比。"""
     t = _today()
     if rng == "month":
-        d0, d1 = month_bounds(t.year, t.month)
-        p1 = d0 - timedelta(days=1)
-        return d0, d1, p1.replace(day=1), p1
+        return _elapsed_month(t.year, t.month, t)
     if rng == "30d":
         d0 = t - timedelta(days=29)
         return d0, t, d0 - timedelta(days=30), d0 - timedelta(days=1)
     if rng == "year":
-        return date(t.year, 1, 1), date(t.year, 12, 31), date(t.year - 1, 1, 1), date(t.year - 1, 12, 31)
+        previous_start = date(t.year - 1, 1, 1)
+        previous_end = date(t.year - 1, t.month, 1) + timedelta(days=t.day - 1)
+        if previous_end.month != t.month:
+            previous_end -= timedelta(days=1)
+        return date(t.year, 1, 1), t, previous_start, previous_end
     if rng == "custom" and d_from and d_to:
         return d_from, d_to, None, None
     if span:
@@ -170,7 +182,13 @@ def segments(vehicle_id: int, energy: str = "elec", user: User = Depends(get_cur
 
 
 def _months(d0: date, d1: date) -> list:
-    return [month_bounds(y, m) for y, m in months_between(d0, d1)]
+    if d0 > d1:
+        return []
+    ranges = []
+    for year, month in months_between(d0, d1):
+        start, end = month_bounds(year, month)
+        ranges.append((max(start, d0), min(end, d1)))
+    return ranges
 
 
 def _clamp_from(date_from: Optional[date], first: date) -> date:
@@ -187,9 +205,9 @@ def energy(vehicle_id: int, date_from: Optional[date] = None, date_to: Optional[
     exps = load_expenses(db, v.id)
     span = data_span(led, exps)
     if not span:
-        return {"months": [], "segments": {}, "charging": None, "calibration": None}
+        return {"months": [], "segments": {}, "totals": {"fuel": None, "elec": None}, "charging": None, "calibration": None}
     d0 = _clamp_from(date_from, span[0])
-    d1 = date_to or max(span[1], _today())
+    d1 = date_to or _today()
     obs = odo_observations(led, exps)
     months = []
     for m0, m1 in _months(d0, d1):
@@ -214,7 +232,7 @@ def energy(vehicle_id: int, date_from: Optional[date] = None, date_to: Optional[
     }
     charging = None
     if led.params.has_elec:
-        by_type = defaultdict(lambda: {"kwh": 0.0, "cents": 0, "count": 0})
+        by_type = defaultdict(lambda: {"kwh": 0.0, "priced_kwh": 0.0, "cents": 0, "count": 0})
         soc_start = [0] * 10
         for p in led.points:
             r = p.rec
@@ -222,14 +240,16 @@ def energy(vehicle_id: int, date_from: Optional[date] = None, date_to: Optional[
                 continue
             t = by_type["dc" if r.charge_type == "super" else (r.charge_type or "home")]
             t["kwh"] += r.charge_kwh or 0
-            t["cents"] += r.cost_cents or 0
+            if r.cost_cents is not None:
+                t["cents"] += r.cost_cents
+                t["priced_kwh"] += r.charge_kwh or 0
             t["count"] += 1
             if r.soc_before is not None:
                 soc_start[min(int(r.soc_before // 10), 9)] += 1
         types = []
         for k, t in by_type.items():
             types.append({"type": k, "kwh": round(t["kwh"], 1), "cents": t["cents"], "count": t["count"],
-                          "avg_price": round(t["cents"] / 100 / t["kwh"], 3) if t["kwh"] > 0 else None})
+                          "avg_price": round(t["cents"] / 100 / t["priced_kwh"], 3) if t["priced_kwh"] > 0 else None})
         types.sort(key=lambda x: -x["kwh"])
         c = led.calib
         charging = {
@@ -266,7 +286,7 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
     if not spans:
         return {"months": [], "categories": [], "total_cents": 0}
     d0 = _clamp_from(date_from, min(s[0] for s in spans))
-    d1 = date_to or max(max(s[1] for s in spans), _today())
+    d1 = date_to or _today()
     months = []
     cum = 0
     for m0, m1 in _months(d0, d1):
@@ -287,7 +307,7 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
         row["cost_per_km"] = round(row["total"] / 100 / row["mileage"], 3) if row["mileage"] >= 1 else None
         months.append(row)
     cats = defaultdict(lambda: {"cents": 0, "count": 0})
-    places = defaultdict(lambda: {"count": 0, "qty": 0.0, "cents": 0, "kind": None})
+    places = defaultdict(lambda: {"count": 0, "priced_qty": 0.0, "priced_cents": 0, "cents": 0, "kind": None})
     prices = {"fuel": [], "elec": []}
     total_km = 0.0
     amort = 0
@@ -307,7 +327,7 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
                 continue
             if r.kind in ("fuel", "charge"):
                 qty = (r.fuel_l if r.kind == "fuel" else r.charge_kwh) or 0
-                if r.cost_cents and qty > 0 and "paid_cents" not in r.estimated_fields:
+                if r.cost_cents is not None and qty > 0 and "paid_cents" not in r.estimated_fields:
                     prices["fuel" if r.kind == "fuel" else "elec"].append({
                         "ts": iso(r.ts), "price": round(r.cost_cents / 100 / qty, 3),
                         "group": r.fuel_grade if r.kind == "fuel" else ("dc" if r.charge_type == "super" else (r.charge_type or "home")),
@@ -315,7 +335,9 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
                 if r.place_name:
                     pl = places[(r.kind, r.place_name)]
                     pl["count"] += 1
-                    pl["qty"] += qty
+                    if r.cost_cents is not None and qty > 0:
+                        pl["priced_qty"] += qty
+                        pl["priced_cents"] += r.cost_cents
                     pl["cents"] += r.cost_cents or 0
                     pl["kind"] = r.kind
         for e in exps:
@@ -332,7 +354,7 @@ def cost(vehicle_id: Optional[int] = None, date_from: Optional[date] = None, dat
                          "share": round(c["cents"] / total, 3) if total else None})
     cat_list.sort(key=lambda x: -x["cents"])
     place_list = [{"name": name, "kind": kind, "count": p["count"],
-                   "avg_price": round(p["cents"] / 100 / p["qty"], 3) if p["qty"] > 0 else None,
+                   "avg_price": round(p["priced_cents"] / 100 / p["priced_qty"], 3) if p["priced_qty"] > 0 else None,
                    "cents": p["cents"]} for (kind, name), p in places.items()]
     place_list.sort(key=lambda x: -x["count"])
     return {
@@ -404,9 +426,7 @@ def _sentence(rep: dict, prev: Optional[dict], v: Vehicle) -> str:
 
 
 def _month_report(v: Vehicle, led, exps, y: int, m: int) -> dict:
-    d0, d1 = month_bounds(y, m)
-    p1 = d0 - timedelta(days=1)
-    p0 = p1.replace(day=1)
+    d0, d1, p0, p1 = _elapsed_month(y, m, _today())
     rep = period_report(led, exps, d0, d1, v.initial_odometer_km)
     prev = period_report(led, exps, p0, p1, v.initial_odometer_km)
     return {"month": f"{y:04d}-{m:02d}", "report": rep, "prev": prev, "sentence": _sentence(rep, prev, v)}
@@ -473,11 +493,12 @@ def yearly_report(vehicle_id: int, year: Optional[int] = None, user: User = Depe
     year = year or _today().year
     led = load_ledger(db, v)
     exps = load_expenses(db, v.id)
-    d0, d1 = date(year, 1, 1), date(year, 12, 31)
+    today = _today()
+    d0 = date(year, 1, 1)
+    d1 = today if year == today.year else date(year, 12, 31)
     rep = period_report(led, exps, d0, d1, v.initial_odometer_km)
     months = []
-    for m in range(1, 13):
-        m0, m1 = month_bounds(year, m)
+    for m0, m1 in _months(d0, d1):
         r = period_report(led, exps, m0, m1, v.initial_odometer_km)
         months.append({"month": m0.strftime("%Y-%m"), "mileage": r["mileage"], "total_cents": r["total_cents"],
                        "energy_cents": r["energy_cents"], "fuel": r["fuel"], "elec": r["elec"]})

@@ -328,10 +328,11 @@ function segmentCard(s, d, v) {
   const isComb = s.energy === "combined";
   const unit = s.energy === "fuel" || isComb ? "L" : "kWh";
   const title = isComb ? "本段综合能耗" : s.energy === "fuel" ? "本段油耗" : s.kind === "idle" ? "本段静置耗电" : "本段电耗";
+  const uncertain = (s.energy === "fuel" || isComb) && s.amount === 0 ? "油量变化低于油表分辨率" : "误差太大，不显示";
   const head = s.status !== "ok"
-    ? html`<span class="badge warn">${{ missed: "有漏记，未计算", negative: "数据异常（消耗为负）", incomplete: "期间有汇总补能，不单独计算", uncertain: "误差太大，不显示" }[s.status] || "无法计算"}</span>`
+    ? html`<span class="badge warn">${{ missed: "有漏记，未计算", negative: "数据异常（消耗为负）", incomplete: "期间有汇总补能，不单独计算", uncertain }[s.status] || "无法计算"}</span>`
     : s.kind === "idle"
-      ? html`<b class="num seg-big">${num(s.idle_amount ?? s.amount)} <small>kWh</small></b><span class="muted small">${num(s.days, 1)} 天 · ${num(s.per_day)} kWh/天</span>${helpTip(IDLE_HELP)}`
+      ? html`<b class="num seg-big">${num(s.idle_amount ?? s.amount)} <small>kWh</small></b><span class="muted small">${s.per_day != null ? `${num(s.days, 1)} 天 · ${num(s.per_day)} kWh/天` : "估算 · 停车时长未知"}</span>${helpTip(IDLE_HELP)}`
       : isComb
         ? html`<b class="num seg-big fuel-c">${num(s.per100)} <small>L</small></b><b class="num seg-big elec-c">${s.elec_per100 != null ? num(s.elec_per100) : "–"} <small>kWh</small></b><span class="muted small">/100km</span>`
         : html`<b class="num seg-big ${s.energy === "fuel" ? "fuel-c" : "elec-c"}">${num(s.per100)} <small>${unit}/100km</small></b>${qTag(s.quality, s.err100)}`;
@@ -352,7 +353,7 @@ function segmentCard(s, d, v) {
       ${s.equiv_per100 != null ? html`<span>等效油耗 ${num(s.equiv_per100)} L</span>` : ""}
       ${s.elec_share != null ? html`<span>电能占比 ${num(s.elec_share * 100, 0)}%</span>` : ""}</div>` : ""}
     ${parts.length ? html`<div class="formula">${formula}${s.kind === "idle" ? "" : html`<div>÷ ${km(s.distance)} km × 100</div>`}</div>` : ""}
-    ${canMark ? html`<div class="seg-marks" data-energy="${s.energy}" data-end="${s.end_id}">
+    ${canMark ? html`<div class="seg-marks" data-energy="${s.energy}" data-start="${s.start_id}" data-end="${s.end_id}">
       <div class="chips wrap">${Object.entries(SEGMENT_TAGS).map(([k, l]) => html`<button class="chip sm ${s.tag === k ? "on" : ""}" data-tag="${k}">${l}</button>`)}</div>
       <label class="mini-check" ${pureIdle ? "hidden" : ""}><input type="checkbox" data-excl ${s.excluded ? "checked" : ""}> <span data-excl-text>${exclText(s.tag)}</span></label></div>` : ""}
   </div>`;
@@ -367,22 +368,32 @@ function exclText(tag) {
 function bindSegmentMarks(body, d, v) {
   $$(".seg-marks", body).forEach((box) => {
     const send = async (tag, excluded) => {
+      const controls = $$("button, input", box);
+      controls.forEach((control) => { control.disabled = true; });
       try {
-        await api("/api/segments", { method: "PATCH", body: { vehicle_id: v.id, end_record_id: +box.dataset.end, energy: box.dataset.energy, tag, excluded } });
+        await api("/api/segments", { method: "PATCH", body: { vehicle_id: v.id, end_record_id: +box.dataset.end, start_record_id: +box.dataset.start, energy: box.dataset.energy, tag, excluded } });
         emit("data-changed");
+        const latest = await api(`/api/records/${d.id}`);
+        latest.type = "record";
+        body.innerHTML = String(detailHtml(latest, v));
+        bindSegmentMarks(body, latest, v);
         toast("已更新这段的标签");
       } catch (e) {
         toastError(e);
+      } finally {
+        controls.forEach((control) => { control.disabled = false; });
       }
     };
+    const checkbox = $("[data-excl]", box);
     box.addEventListener("click", (e) => {
       const c = e.target.closest("[data-tag]");
-      if (!c) return;
-      $$("[data-tag]", box).forEach((x) => x.classList.toggle("on", x === c));
-      $("[data-excl-text]", box).textContent = exclText(c.dataset.tag);
-      send(c.dataset.tag, $("[data-excl]", box).checked);
+      if (c) send(c.dataset.tag, checkbox.checked);
     });
-    $("[data-excl]", box).addEventListener("change", (e) => send($("[data-tag].on", box)?.dataset.tag || "normal", e.target.checked));
+    checkbox.addEventListener("change", () => {
+      const checked = checkbox.checked;
+      checkbox.checked = !checked;
+      send($("[data-tag].on", box)?.dataset.tag || "normal", checked);
+    });
   });
 }
 

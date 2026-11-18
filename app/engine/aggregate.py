@@ -145,7 +145,7 @@ def energy_totals(segs: list[Segment], d0: Optional[date] = None, d1: Optional[d
     drive = [0.0, 0.0, "A", 0.0, 0]
     idle = [0.0, 0.0, "A", 0.0, 0]
     allv = [0.0, 0.0, "A", 0.0, 0]
-    idle_days = 0.0
+    idle_days = measured_idle = estimated_idle = 0.0
     mono = _mono(obs) if obs else None
 
     def add(t, amount, dist, quality, err):
@@ -166,7 +166,11 @@ def energy_totals(segs: list[Segment], d0: Optional[date] = None, d1: Optional[d
             f_drive = f_km if s.distance >= 1 else f_t
             add(allv, part * f_drive + s.idle_amount * f_t, s.distance * f_drive, s.quality, (s.err or 0) * f_t)
             add(idle, s.idle_amount * f_t, 0.0, s.quality, (s.err or 0) * f_t)
-            idle_days += s.days * f_t
+            if s.distance < 1 and s.days > 0:
+                idle_days += s.days * f_t
+                measured_idle += s.idle_amount * f_t
+            else:
+                estimated_idle += s.idle_amount * f_t
             if s.drive_part is not None and not s.excluded and f_km > 0:
                 add(drive, part * f_km, s.distance * f_km, worse(s.quality, "B"), 0.0)
             continue
@@ -182,7 +186,9 @@ def energy_totals(segs: list[Segment], d0: Optional[date] = None, d1: Optional[d
         {
             "amount": round(idle[0], 2),
             "days": round(idle_days, 1),
-            "per_day": round(idle[0] / idle_days, 2) if idle_days > 0 else None,
+            "per_day": round(measured_idle / idle_days, 2) if idle_days > 0 else None,
+            "measured_amount": round(measured_idle, 2),
+            "estimated_amount": round(estimated_idle, 2),
             "share": round(idle[0] / allv[0], 3) if allv[0] > 0 else None,
             "count": idle[4],
         }
@@ -244,7 +250,8 @@ def segment_dict(s: Segment, kwh_per_l: float = 8.9) -> dict:
         "err": s.err,
         "per100": round(s.per100, 2) if s.per100 is not None else None,
         "err100": round(s.err / s.distance * 100, 2) if (s.err and s.distance >= 1) else None,
-        "per_day": round(s.idle_amount / s.days, 2) if (s.kind == "idle" and s.amount and s.days > 0) else None,
+        "per_day": round(s.idle_amount / s.days, 2) if (s.kind == "idle" and s.distance < 1 and s.amount is not None and s.days > 0) else None,
+        "anchor": s.anchor,
         "idle_amount": round(s.idle_amount, 2) if (s.kind == "idle" and s.amount is not None) else None,
         "drive_part": round(s.drive_part, 2) if s.drive_part is not None else None,
         "drive_base100": round(s.drive_base100, 2) if s.drive_base100 is not None else None,
@@ -264,7 +271,9 @@ def segment_dict(s: Segment, kwh_per_l: float = 8.9) -> dict:
         d["elec_err"] = s.elec_err
         d["elec_quality"] = s.elec_quality
         d["elec_per100"] = round(s.elec_kwh / dist * 100, 2) if (s.elec_kwh is not None and dist >= 1) else None
-        if s.amount is not None and s.elec_kwh is not None and dist >= 1:
+        d["equiv_per100"] = None
+        d["elec_share"] = None
+        if s.status == "ok" and s.amount is not None and s.elec_kwh is not None and dist >= 1:
             d["equiv_per100"] = round((s.amount + s.elec_kwh / kwh_per_l) / dist * 100, 2)
             tot = s.elec_kwh + s.amount * kwh_per_l
             d["elec_share"] = round(s.elec_kwh / tot, 3) if tot > 0 else None
@@ -344,7 +353,14 @@ def delivery_index(led: Ledger) -> Optional[int]:
     return i if i is not None else _first_real(led)
 
 
-def rough_best(led: Ledger, energy: str) -> Optional[dict]:
+def _crosses_excluded(led: Ledger, energy: str, start_id: int, end_id: int) -> bool:
+    indices = led.point_index()
+    start, end = indices[start_id], indices[end_id]
+    segs = {"fuel": led.fuel_segments, "elec": led.elec_segments, "combined": led.combined_segments}[energy]
+    return any(s.excluded and indices[s.start_id] < end and indices[s.end_id] > start for s in segs)
+
+
+def rough_best(led: Ledger, energy: str, *, respect_exclusions: bool = False) -> Optional[dict]:
     """在「记账期」和「提车至今」两个口径里取相对误差更小的；误差未知按 30% 计，同分取里程长的。"""
     li, di = ledger_start_index(led), delivery_index(led)
     cands = []
@@ -352,7 +368,8 @@ def rough_best(led: Ledger, energy: str) -> Optional[dict]:
         if idx is None or any(c[1] == idx for c in cands):
             continue
         r = rough(led, energy, idx)
-        if r and r["distance"] >= ROUGH_MIN_KM:
+        if (r and r["distance"] >= ROUGH_MIN_KM
+                and (not respect_exclusions or not _crosses_excluded(led, energy, r["start_id"], r["end_id"]))):
             cands.append((r, idx, scope))
     if not cands:
         return None
@@ -413,7 +430,7 @@ def latest_energy(led: Ledger, energy: str) -> dict:
             "end_ts": s.end_ts.isoformat(timespec="minutes"),
             "cost_per_km": _cost_per_km([s]),
         }
-    r = rough_best(led, energy)
+    r = rough_best(led, energy, respect_exclusions=True)
     if r:
         return {**r, "hint": _hint_code(led, energy)}
     return {"quality": "D", "per100": None, "hint": _hint_code(led, energy)}
@@ -423,15 +440,20 @@ def latest_pair(led: Ledger) -> Optional[dict]:
     """油电混动首页：油耗和电耗取同一区间，再给出折合油耗。
     优先最近一段精确综合段，其次最近一段综合段，最后用油耗粗略口径的同一区间算期间用电。"""
     kwh = led.params.kwh_per_l
-    comb = [s for s in led.combined_segments if s.status == "ok" and s.elec_kwh is not None and s.distance >= 1]
+    comb = [s for s in led.combined_segments
+            if s.status == "ok" and s.kind == "drive" and s.distance >= 1 and not s.excluded and s.elec_kwh is not None]
     exact = [s for s in comb if s.quality == "A"]
     if exact or comb:
         return {**segment_dict((exact or comb)[-1], kwh), "scope": "segment"}
-    f = rough_best(led, "fuel")
+    f = rough_best(led, "fuel", respect_exclusions=True)
     if not f:
+        return None
+    if _crosses_excluded(led, "combined", f["start_id"], f["end_id"]):
         return None
     idx = led.point_index()
     e = rough(led, "elec", idx[f["start_id"]], idx[f["end_id"]])
+    if e and _crosses_excluded(led, "elec", f["start_id"], f["end_id"]):
+        e = None
     out = {
         "energy": "combined",
         "start_id": f["start_id"],

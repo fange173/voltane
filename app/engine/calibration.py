@@ -41,7 +41,10 @@ def _sample(r: Rec) -> Optional[float]:
         return None
     if r.soc_before is None or r.soc_after is None:
         return None
-    if {"charge_kwh", "soc_before", "soc_after"} & set(r.estimated_fields):
+    estimated = set(r.estimated_fields)
+    if r.charge_full:
+        estimated.discard("soc_after")
+    if {"charge_kwh", "soc_before", "soc_after"} & estimated:
         return None
     d = r.soc_after - r.soc_before
     if d < MIN_SAMPLE_DSOC:

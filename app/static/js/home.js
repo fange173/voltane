@@ -71,7 +71,7 @@ function render(el, v, d, reload) {
           ${kpi("总花费", money(p.total_cents, { digits: p.total_cents >= 1000000 ? 0 : 2 }), "", changeTag(p.total_cents, prev?.total_cents, { min: MIN_CENTS }), "wallet", p.summary_cents ? "含汇总分摊" : "")}
           ${v.has_fuel ? kpi("加油", num(p.fuel_l, 1), "L", raw(`<span class="tiny muted">${p.fuel_count} 次 · ${money(p.fuel_cents)}</span>`), "fuel", "", "fuel") : ""}
           ${v.has_elec ? kpi("充电", num(p.elec_kwh, 0), "kWh", raw(`<span class="tiny muted">${p.elec_count} 次${p.home_share != null ? ` · 家充 ${num(p.home_share * 100, 0)}%` : ""}</span>`), "bolt", "", "elec") : ""}
-          ${kpi("每公里能源", p.energy_cost_per_km != null ? "¥" + fixed(p.energy_cost_per_km) : "–", "", changeTag(p.energy_cost_per_km, prevCpk("energy_cost_per_km")), "coin")}
+          ${kpi("每公里补能支出", p.energy_cost_per_km != null ? "¥" + fixed(p.energy_cost_per_km) : "–", "", changeTag(p.energy_cost_per_km, prevCpk("energy_cost_per_km")), "coin")}
           ${kpi("每公里总成本", p.total_cost_per_km != null ? "¥" + fixed(p.total_cost_per_km) : "–", "", changeTag(p.total_cost_per_km, prevCpk("total_cost_per_km")), "receipt", "", "", HELP_CPK)}
         </div>
         ${editable ? quickRow(v) : ""}
@@ -176,7 +176,7 @@ function heroCard(v, d) {
     if (c && c.per100 != null) {
       // 油电同一区间，主数字是折合油耗
       const range = c.low100 != null ? ` (${num(c.low100)}–${num(c.high100)})` : "";
-      body = html`<div class="big-pair">${bigNum(c.equiv_per100 ?? c.per100, "L 折合", "combined", c.quality)}
+      body = html`<div class="big-pair">${bigNum(c.equiv_per100, "L 折合", "combined", c.quality)}
         <div class="big-side"><div><span class="muted tiny">油</span><b class="num fuel-c">${num(c.per100)}<small>L${range}</small></b></div>
           <div><span class="muted tiny">电</span><b class="num elec-c">${c.elec_per100 != null ? num(c.elec_per100) : "–"}<small>kWh</small></b></div></div></div>`;
       foot = [
@@ -185,7 +185,7 @@ function heroCard(v, d) {
         html`<span class="tiny muted">同一区间 ${km(c.distance)} km${helpTip(HELP_EQUIV)}</span>`,
       ];
       d._scope = c.scope === "segment"
-        ? `${c.quality === "A" ? "满到满" : "油表读数之间"} · ${fmtDate(c.end_ts)}`
+        ? `${c.anchor === "full" ? "满到满" : "油表读数之间"} · ${fmtDate(c.end_ts)}`
         : `粗略 · ${c.scope === "delivery" ? "提车至今" : "记账以来"}`;
       const f = L.fuel;
       if (c.quality === "C" && f?.hint) {
@@ -229,15 +229,21 @@ function heroCard(v, d) {
       hintKind = "fuel";
     }
   }
-  const sparks = [];
-  if (v.has_fuel && d.spark.fuel.length > 1) sparks.push(raw(sparkline(d.spark.fuel.map((x) => x.per100), { color: "fuel", w: 140, hollow: d.spark.fuel.map((x) => x.quality !== "A") })));
-  if (v.has_elec && d.spark.elec.length > 1) sparks.push(raw(sparkline(d.spark.elec.map((x) => x.per100), { color: "elec", w: 140, hollow: d.spark.elec.map((x) => x.quality !== "A") })));
+  const sparks = [["fuel", "油耗"], ["elec", "电耗"]]
+    .filter(([key]) => d.spark[key].length > 1)
+    .map(([key, label]) => html`<div class="hero-spark">
+      <span class="tiny muted"><i class="lg-dot ${key}"></i>${label}</span>
+      ${raw(sparkline(d.spark[key].map((x) => x.per100), {
+        color: key, w: 240, hollow: d.spark[key].map((x) => x.quality !== "A"),
+      }))}
+    </div>`);
   const slf = d.since_last_full;
   return html`<a class="card hero" data-link href="/stats/energy">
     <div class="row between"><span class="card-title">最近能耗</span><span class="tiny muted">${d._scope || ""}</span></div>
     ${body}
     <div class="hero-foot">${foot.filter(Boolean)}</div>
-    ${sparks.length ? html`<div class="hero-sparks">${sparks}<span class="tiny muted">近 10 段趋势</span></div>` : ""}
+    ${sparks.length ? html`<div class="hero-trends"><span class="tiny muted">近 10 段趋势</span>
+      <div class="hero-sparks">${sparks}</div></div>` : ""}
     ${slf && slf.km > 0 ? html`<div class="tiny muted">距上次加满已行驶 ${km(slf.km)} km</div>` : ""}
   </a>
   ${hint ? html`<div class="callout ${hintKind === "fuel" ? "fuel" : "elec"}">${raw(icon("sparkle", 18))}<span class="grow">${hint}</span>

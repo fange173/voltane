@@ -364,6 +364,16 @@ def test_tagged_idle_with_mileage_splits_drive_part():
     assert t["drive"]["distance"] == 400 and t["drive"]["per100"] == pytest.approx(25 * k, abs=0.01)
     assert t["idle"]["amount"] == pytest.approx(12.5 * k, abs=0.01)
     assert t["overall"]["amount"] == pytest.approx(112.5 * k, abs=0.01)
+    assert t["idle"]["per_day"] is None
+    assert t["idle"]["estimated_amount"] == t["idle"]["amount"]
+    assert segment_dict(seg)["per_day"] is None
+
+    measured = snap(9, "2026-06-22T08:00", 1400, soc=42.5)
+    led = build_ledger(params, [*example_tagged_idle(), measured], marks={(8, "elec"): Mark(tag="idle")})
+    idle = energy_totals(led.elec_segments)["idle"]
+    assert idle["days"] == 2
+    assert idle["measured_amount"] == pytest.approx(10 * k, abs=0.01)
+    assert idle["per_day"] == pytest.approx(5 * k, abs=0.01)
 
 
 def test_tagged_idle_excluded_drops_drive_part():
@@ -417,3 +427,88 @@ def test_latest_pair_uses_same_interval_when_no_combined_segment():
     f = rough_best(led, "fuel")
     assert p["per100"] == f["per100"] and p["distance"] == f["distance"]
     assert p["elec_kwh"] is not None and p["equiv_per100"] is not None
+
+
+def test_unchanged_gauge_does_not_publish_zero_fuel_consumption():
+    records = [
+        snap(1, "2026-11-14T08:00", 2000, soc=70, fuel_pct=15),
+        snap(2, "2026-11-14T14:00", 2061, soc=25, fuel_pct=15),
+    ]
+    led = build_ledger(VehicleParams(**PHEV), records)
+    [seg] = led.combined_segments
+    assert seg.status == "uncertain"
+    assert seg.per100 is None
+    assert segment_dict(seg)["equiv_per100"] is None
+    assert latest_pair(led) is None
+    assert latest_energy(led, "elec")["per100"] > 0
+
+    exact = build_ledger(VehicleParams(**PHEV, gauge_err_pct=0), records)
+    [seg] = exact.fuel_segments
+    assert seg.status == "ok" and seg.per100 == 0
+
+
+def test_free_charge_has_zero_segment_price_and_missing_price_stays_unknown():
+    records = [
+        charge(1, "2026-11-10T08:00", 1000, 20, 80, 12, 0),
+        charge(2, "2026-11-11T08:00", 1100, 20, 80, 12, 1200),
+        snap(3, "2026-11-12T08:00", 1200, soc=20),
+    ]
+    params = VehicleParams(energy_type="bev", battery_kwh=18)
+    first, second = build_ledger(params, records).elec_segments
+    assert first.cost_cents == 0  # 终点的付费充电属于下一段
+    assert second.cost_cents == 600  # 库存变化按免费与付费记录的加权单价计
+    for r in records:
+        r.cost_cents = None
+    assert all(s.cost_cents is None for s in build_ledger(params, records).elec_segments)
+
+
+def test_home_does_not_select_excluded_combined_interval():
+    led = build_ledger(VehicleParams(**PHEV), example_a(),
+                       marks={(4, "combined"): Mark(excluded=True, start_id=1)})
+    assert latest_pair(led) is None
+
+
+def test_charging_to_limit_keeps_calibration_and_historical_soc():
+    params = VehicleParams(energy_type="bev", battery_kwh=45, charge_limit=90)
+    records = [
+        charge(1, "2026-11-01T08:00", 1000, 20, 100, 20, 2000,
+               charge_full=True, estimated_fields=frozenset({"soc_after"})),
+        charge(2, "2026-11-05T08:00", 1200, 30, 100, 17.5, 1750,
+               charge_full=True, estimated_fields=frozenset({"soc_after"})),
+    ]
+    led = build_ledger(params, records)
+    assert led.calib.source == "learned" and led.calib.k == pytest.approx(0.25)
+    assert len(led.calib.samples) == 2
+    [segment] = led.elec_segments
+    assert segment.quality == "A" and segment.per100 == pytest.approx(8.75)
+
+    records[0].charge_full = False
+    led = build_ledger(params, records)
+    assert len(led.calib.samples) == 1
+    assert led.elec_segments[0].quality == "B"
+    records[1].estimated_fields = frozenset({"soc_after", "charge_kwh"})
+    assert build_ledger(params, records).calib.source == "default"
+
+
+def test_home_rough_fallback_does_not_cross_excluded_segments():
+    records = example_a() + [snap(5, "2026-09-20T08:00", 11200, soc=20)]
+    led = build_ledger(VehicleParams(**PHEV), records,
+                       marks={(4, "fuel"): Mark(excluded=True, start_id=1),
+                              (4, "combined"): Mark(excluded=True, start_id=1)})
+    assert rough_best(led, "fuel")["per100"] == pytest.approx(2.68)
+    assert latest_pair(led) is None
+    assert latest_energy(led, "fuel")["per100"] is None
+
+    # 粗略范围覆盖排除段的一部分，不能重新带回被排除的能耗。
+    recs = [
+        snap(1, "2026-09-01T08:00", 10000, soc=50, fuel_pct=50),
+        fuel(2, "2026-09-02T08:00", 10100, 20, 15000, soc=45),
+        fuel(3, "2026-09-10T08:00", 10800, 25, 18750, soc=30),
+        snap(4, "2026-09-20T08:00", 11000, soc=20, fuel_pct=10),
+    ]
+    led = build_ledger(VehicleParams(**PHEV, allow_gauge_anchor=False), recs,
+                       marks={(3, "fuel"): Mark(excluded=True, start_id=2),
+                              (3, "combined"): Mark(excluded=True, start_id=2)})
+    assert rough_best(led, "fuel") is not None
+    assert rough_best(led, "fuel", respect_exclusions=True) is None
+    assert latest_pair(led) is None

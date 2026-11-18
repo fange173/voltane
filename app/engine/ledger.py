@@ -174,6 +174,8 @@ def elec_levels(r: Rec, p: VehicleParams, k: Optional[float]) -> tuple:
     kwh_conf = "estimated" if "charge_kwh" in est else None
     before = soc_level(r.soc_before, "soc_before")
     after = soc_level(r.soc_after, "soc_after")
+    if r.charge_full and r.soc_after is not None and "soc_after" in est and k:
+        after = Level(r.soc_after * k, k, "exact")
     if after is None and r.charge_full:
         after = Level(full_ref, 1 * k if k else 0.0, "exact")
     if after is None and before is not None and kwh is not None:
@@ -239,7 +241,7 @@ def span(points: list[Point], i: int, j: int, energy: str) -> Span:
     status = "ok"
     if amount < 0:
         status = "negative"
-    elif quality == "B" and amount > 0 and err / amount > MAX_REL_ERR:
+    elif quality == "B" and err > amount * MAX_REL_ERR:
         status = "uncertain"
     return Span(round(amount, 3), round(err, 3), quality, status)
 
@@ -284,9 +286,9 @@ def summary_diffs(summaries: list[Summary], records: list[Rec], fuel_price: floa
         inside = [r for r in records if s.start <= r.ts.date() <= s.end]
         rec = {
             "fuel_l": sum(r.fuel_l or 0 for r in inside if r.kind == "fuel"),
-            "fuel_cents": sum(r.cost_cents for r in inside if r.kind == "fuel"),
+            "fuel_cents": sum((r.cost_cents or 0) for r in inside if r.kind == "fuel"),
             "elec_kwh": sum(r.charge_kwh or 0 for r in inside if r.kind == "charge"),
-            "elec_cents": sum(r.cost_cents for r in inside if r.kind == "charge"),
+            "elec_cents": sum((r.cost_cents or 0) for r in inside if r.kind == "charge"),
         }
         fuel_total, fuel_est = s.fuel_l, False
         if fuel_total is None and s.fuel_cents:
@@ -339,7 +341,7 @@ def _avg_price(recs: list[Rec], energy: str) -> Optional[float]:
     qty = cents = 0.0
     for r in recs:
         q = raw_added(r, energy)
-        if q > 0 and r.cost_cents:
+        if q > 0 and r.cost_cents is not None:
             qty += q
             cents += r.cost_cents
     return cents / 100 / qty if qty > 0 else None
@@ -350,12 +352,42 @@ def recent_price(points: list[Point], upto: int, energy: str, n: int = 5) -> Opt
     return _avg_price(recs, energy)
 
 
+def _electricity_cost(points, i, j) -> Optional[int]:
+    """段内实付加上库存变化。终点充电发生在该段之后。"""
+    price = recent_price(points, j - 1, "elec")
+    cents = 0.0
+    for p in points[i + 1:j]:
+        r = p.rec
+        if not is_energy_rec(r, "elec"):
+            continue
+        if r.cost_cents is not None:
+            cents += r.cost_cents
+        elif raw_added(r, "elec") > 0:
+            if price is None:
+                return None
+            cents += raw_added(r, "elec") * price * 100
+    after_start, before_end = points[i].elec[1], points[j].elec[0]
+    if after_start is not None and before_end is not None:
+        delta = after_start.value - before_end.value
+        if delta:
+            if price is None:
+                return None
+            cents += delta * price * 100
+    return round(max(0, cents))
+
+
 def _segment_cost(points, i, j, energy, amount) -> Optional[int]:
     if amount is None or amount < 0:
         return None
+    if amount == 0:
+        return 0
+    if energy == "elec":
+        return _electricity_cost(points, i, j)
     recs = [points[m].rec for m in range(i + 1, j + 1) if is_energy_rec(points[m].rec, energy)]
-    price = _avg_price(recs, energy) or recent_price(points, j, energy)
-    return round(amount * price * 100) if price else None
+    price = _avg_price(recs, energy)
+    if price is None:
+        price = recent_price(points, j, energy)
+    return round(amount * price * 100) if price is not None else None
 
 
 # ---------- 分段 ----------
@@ -375,6 +407,7 @@ def _fuel_segments(points, p: VehicleParams) -> list[Segment]:
         j = strict[m]
         sp = span(points, i, j, "fuel")
         seg = _make_segment(points, i, j, "fuel", sp)
+        seg.anchor = "full"
         if points[j].odo - points[i].odo < p.min_segment_km:
             seg.kind = "short"
         segs.append(seg)
@@ -391,7 +424,9 @@ def _fuel_segments(points, p: VehicleParams) -> list[Segment]:
                 continue
             if points[b].odo - points[a].odo < p.min_segment_km:
                 continue
-            segs.append(_make_segment(points, a, b, "fuel", span(points, a, b, "fuel")))
+            seg = _make_segment(points, a, b, "fuel", span(points, a, b, "fuel"))
+            seg.anchor = "gauge"
+            segs.append(seg)
     segs.sort(key=lambda s: (s.end_odo, s.end_ts))
     return segs
 
@@ -436,6 +471,7 @@ def _combined_segments(points, fuel_segs: list[Segment], k: Optional[float]) -> 
         fsp = span(points, i, j, "fuel")
         seg = _make_segment(points, i, j, "combined", fsp)
         seg.kind = fs.kind
+        seg.anchor = fs.anchor
         esp = span(points, i, j, "elec")
         if esp.status == "unknown":
             # 两端没有电量读数：只用期间充电量，误差按 SOC 差 ±20 个百分点计
@@ -448,7 +484,7 @@ def _combined_segments(points, fuel_segs: list[Segment], k: Optional[float]) -> 
         elif esp.status in ("ok", "uncertain"):
             seg.elec_kwh, seg.elec_err, seg.elec_quality = esp.amount, esp.err, esp.quality
         fuel_cost = _segment_cost(points, i, j, "fuel", fsp.amount) if fsp.status == "ok" else None
-        elec_cost = _segment_cost(points, i, j, "elec", seg.elec_kwh) if seg.elec_kwh is not None else 0
+        elec_cost = _segment_cost(points, i, j, "elec", seg.elec_kwh)
         if fuel_cost is not None and elec_cost is not None:
             seg.cost_cents = fuel_cost + elec_cost
         if seg.elec_quality:
@@ -460,7 +496,7 @@ def _combined_segments(points, fuel_segs: list[Segment], k: Optional[float]) -> 
 def _apply_marks(segs: list[Segment], marks: dict, energy: str) -> None:
     for s in segs:
         m = marks.get((s.end_id, energy))
-        if not m:
+        if not m or (m.start_id is not None and m.start_id != s.start_id):
             continue
         s.tag = m.tag
         s.excluded = m.excluded
@@ -521,7 +557,7 @@ def _detect_idle_anomalies(segs: list[Segment]) -> None:
     """静置段日均耗电明显高于以往静置（如哨兵、空调忘关），与车型无关。"""
     history = []
     for s in segs:
-        if s.status != "ok" or s.kind != "idle" or s.amount is None or s.days < IDLE_MIN_DAYS:
+        if s.status != "ok" or s.kind != "idle" or s.amount is None or s.distance >= IDLE_KM or s.days < IDLE_MIN_DAYS:
             continue
         v = s.idle_amount / s.days
         if s.tag == "normal" and not s.excluded and len(history) >= ANOMALY_MIN_BASE:

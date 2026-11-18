@@ -490,3 +490,103 @@ def test_restore_runs_migrations(admin, tmp_path):
     con = sqlite3.connect(DB_PATH)
     assert con.execute("PRAGMA user_version").fetchone()[0] == MIGRATIONS[-1][0]
     con.close()
+
+
+def test_record_timeline_and_same_minute_save_warnings(vehicle):
+    for day, odo, soc in [(10, 3000, 55), (11, 3100, 45), (12, 3200, 35)]:
+        response = rec(vehicle, kind="snapshot", occurred_at=f"2026-11-{day}T08:00",
+                       odometer_km=odo, soc_before_pct=soc)
+        assert response.status_code == 200
+    p = vehicle.get("/api/records/prefill", params={
+        "vehicle_id": vehicle.vid, "kind": "snapshot", "timeline": True,
+    }).json()
+    assert [(x["time"], x["odo"], x["soc"]) for x in p["timeline"]] == [
+        ("2026-11-10T08:00", 3000, 55), ("2026-11-11T08:00", 3100, 45), ("2026-11-12T08:00", 3200, 35),
+    ]
+    r = rec(vehicle, kind="snapshot", occurred_at="2026-11-12T08:00", odometer_km=3150)
+    assert r.status_code == 200
+    assert any("3,200" in w for w in r.json()["warnings"])
+
+
+def test_marks_follow_original_interval_after_regrouping(vehicle):
+    start, mid, end = [
+        rec(vehicle, kind="snapshot", occurred_at=f"2026-11-{day}T08:00",
+            odometer_km=odo, soc_before_pct=soc).json()["record"]
+        for day, odo, soc in [(10, 2000, 90), (11, 2100, 60), (12, 2200, 30)]
+    ]
+    mark = {"vehicle_id": vehicle.vid, "energy": "elec", "excluded": True,
+            "end_record_id": end["id"], "start_record_id": mid["id"]}
+    assert vehicle.patch("/api/segments", json=mark).status_code == 200
+
+    b = vehicle.put(f"/api/records/{mid['id']}", json={**mid, "odometer_km": None, "odometer_estimated": True})
+    assert b.status_code == 200 and b.json()["changed_segments"] > 0
+    end_url = f"/api/records/{end['id']}"
+    [seg] = vehicle.get(end_url).json()["segments"]
+    assert seg["start_id"] == start["id"] and not seg["excluded"]
+    assert vehicle.patch("/api/segments", json=mark).status_code == 409
+
+    b = vehicle.put(f"/api/records/{mid['id']}", json={**mid, "version": b.json()["record"]["version"]})
+    assert b.status_code == 200
+    [seg] = vehicle.get(end_url).json()["segments"]
+    assert seg["start_id"] == mid["id"] and seg["excluded"]
+
+
+def test_current_period_has_no_future_insurance_amortization(vehicle, monkeypatch):
+    from datetime import date
+
+    monkeypatch.setattr("app.routers.stats._today", lambda: date(2026, 11, 18))
+    assert vehicle.post("/api/expenses", json={
+        "vehicle_id": vehicle.vid, "category": "insurance", "occurred_at": "2026-11-01T00:00",
+        "amount_cents": 36500, "period_start": "2026-11-01", "period_end": "2027-10-31",
+    }).status_code == 200
+    args = {"vehicle_id": vehicle.vid, "range": "month"}
+    result = vehicle.get("/api/stats/overview", params=args).json()
+    assert result["period"]["to"] == "2026-11-18"
+    assert result["period"]["amortized_cents"] == 1800
+    assert result["period"]["total_cents"] == 36500
+    assert result["prev"]["to"] == "2026-10-18"
+    year = vehicle.get("/api/stats/yearly-report", params={"vehicle_id": vehicle.vid}).json()
+    assert year["report"]["to"] == "2026-11-18"
+    assert year["report"]["amortized_cents"] == 1800
+
+
+def test_empty_energy_payload_has_totals(vehicle):
+    d = vehicle.get("/api/stats/energy", params={"vehicle_id": vehicle.vid}).json()
+    assert d["totals"] == {"fuel": None, "elec": None}
+
+
+def test_expense_form_prefill_returns_timeline(vehicle):
+    assert rec(vehicle, kind="snapshot", odometer_km=2100, soc_before_pct=40).status_code == 200
+    assert vehicle.post("/api/expenses", json={"vehicle_id": vehicle.vid, "category": "other",
+                        "occurred_at": "2026-09-02T10:00", "odometer_km": 2200,
+                        "amount_cents": 500}).status_code == 200
+    response = vehicle.get("/api/records/prefill", params={
+        "vehicle_id": vehicle.vid, "kind": "expense", "timeline": True,
+    })
+    assert response.status_code == 200
+    assert [(item["odo"], bool(item.get("expense"))) for item in response.json()["timeline"]] == [
+        (2100, False), (2200, True),
+    ]
+
+
+def test_charging_to_limit_saved_by_web_remains_a_calibration_sample(vehicle):
+    for day, odo, start, kwh in [(1, 1000, 20, 20), (5, 1200, 30, 17.5)]:
+        result = rec(vehicle, kind="charge", occurred_at=f"2026-11-{day:02d}T08:00",
+                     odometer_km=odo, soc_before_pct=start, soc_after_pct=100,
+                     charge_to_limit=True, charge_kwh=kwh, amount_cents=2000,
+                     charge_type="home", estimated_fields=["soc_after"])
+        assert result.status_code == 200
+    result = vehicle.get("/api/stats/energy", params={"vehicle_id": vehicle.vid}).json()
+    assert result["charging"]["k_source"] == "learned"
+    assert result["charging"]["k"] == 0.25
+    assert len(result["charging"]["samples"]) == 2
+    assert result["segments"]["elec"][0]["quality"] == "A"
+
+
+def test_home_fallback_does_not_reintroduce_excluded_consumption(vehicle):
+    last = seed_a(vehicle).json()["record"]
+    vehicle.patch("/api/segments", json={"vehicle_id": vehicle.vid, "end_record_id": last["id"],
+                                         "energy": "combined", "excluded": True}).raise_for_status()
+    result = vehicle.get("/api/stats/overview", params={"vehicle_id": vehicle.vid, "range": "all"}).json()
+    assert "combined" not in result["latest"]
+    assert result["latest"]["fuel"]["per100"] is None

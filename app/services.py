@@ -59,7 +59,7 @@ def rec_from_row(r: Record) -> Rec:
         charge_full=bool(r.charge_to_limit),
         soc_before=r.soc_before_pct,
         soc_after=r.soc_after_pct,
-        cost_cents=r.amount_cents or 0,
+        cost_cents=r.amount_cents,
         extra_cents=r.extra_fee_cents or 0,
         missed_before=bool(r.missed_before),
         snapshot_tag=r.snapshot_tag,
@@ -99,6 +99,31 @@ def active_summaries(db: Session, vehicle_id: int) -> list[PeriodSummary]:
     ))
 
 
+def segment_mark_note(start_id: int, note: str) -> str:
+    return json.dumps({"segment_start_id": start_id, "note": note}, ensure_ascii=False)
+
+
+def _segment_mark_start(note: str) -> Optional[int]:
+    try:
+        data = json.loads(note)
+    except (TypeError, ValueError):
+        return None
+    return data.get("segment_start_id") if isinstance(data, dict) else None
+
+
+def seal_legacy_segment_marks(db: Session, v: Vehicle) -> None:
+    """旧标签没有起点。改动记录前把它绑定到当前区间，避免重分段后套用到别的区间。"""
+    marks = [m for m in db.scalars(select(SegmentMark).where(SegmentMark.vehicle_id == v.id))
+             if _segment_mark_start(m.note) is None]
+    if not marks:
+        return
+    ledger = load_ledger(db, v)
+    starts = {(s.end_id, s.energy): s.start_id
+              for group in (ledger.fuel_segments, ledger.elec_segments, ledger.combined_segments) for s in group}
+    for mark in marks:
+        mark.note = segment_mark_note(starts.get((mark.end_record_id, mark.energy), 0), mark.note or "")
+
+
 def load_ledger(db: Session, v: Vehicle) -> Ledger:
     key = (v.id, v.data_version, v.updated_at)
     with _cache_lock:
@@ -108,7 +133,7 @@ def load_ledger(db: Session, v: Vehicle) -> Ledger:
     rows = [r for r in active_records(db, v.id) if r.status == "done"]
     sums = [summary_from_row(s) for s in active_summaries(db, v.id)]
     marks = {
-        (m.end_record_id, m.energy): Mark(m.tag, m.excluded)
+        (m.end_record_id, m.energy): Mark(m.tag, m.excluded, _segment_mark_start(m.note))
         for m in db.scalars(select(SegmentMark).where(SegmentMark.vehicle_id == v.id))
     }
     led = build_ledger(params_for(v), [rec_from_row(r) for r in rows], sums, marks)

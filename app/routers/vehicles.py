@@ -33,7 +33,7 @@ from app.database import (
 )
 from app.engine.aggregate import odo_observations
 from app.insights import health_report, latest_odo_of
-from app.services import bump, iso, load_expenses, load_ledger, log_activity, users_map, vehicle_dict
+from app.services import bump, iso, load_expenses, load_ledger, log_activity, seal_legacy_segment_marks, users_map, vehicle_dict
 
 router = APIRouter(prefix="/api", tags=["vehicles"])
 
@@ -248,6 +248,7 @@ def get_vehicle(vid: int, user: User = Depends(get_current_user), db: Session = 
 @router.put("/vehicles/{vid}")
 def update_vehicle(vid: int, body: VehicleIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     v, _ = require_vehicle(db, user, vid, "editor")
+    seal_legacy_segment_marks(db, v)
     _apply(v, body)
     bump(v)
     log_activity(db, v.id, user, "update", "vehicle", v.id, "修改了车辆参数")
@@ -526,7 +527,9 @@ def fix_missed(vid: int, body: FixMissedIn, user: User = Depends(get_current_use
     mid = a.ts + (b.ts - a.ts) / 2
     from app.engine.ledger import recent_price
 
-    price = recent_price(led.points, idx[body.before_id], energy) or (0.6 if energy == "elec" else 7.5)
+    price = recent_price(led.points, idx[body.before_id], energy)
+    if price is None:
+        price = 0.6 if energy == "elec" else 7.5
     cents = round(qty * price * 100)
     est = ["odometer_km", "paid_cents", "charge_kwh" if energy == "elec" else "fuel_l"]
     r = Record(vehicle_id=vid, kind=body.kind, occurred_at=mid.replace(second=0, microsecond=0), odometer_km=None,
@@ -537,6 +540,7 @@ def fix_missed(vid: int, body: FixMissedIn, user: User = Depends(get_current_use
         r.charge_kwh, r.charge_type, r.charge_unit_price = qty, norm_charge_type(v.default_charge_type), round(price, 3)
     else:
         r.fuel_liters, r.fuel_grade, r.fuel_unit_price = qty, v.default_fuel_grade, round(price, 2)
+    seal_legacy_segment_marks(db, v)
     db.add(r)
     bump(v)
     db.flush()
@@ -570,6 +574,7 @@ def fix_delivery(vid: int, body: DeliveryIn, user: User = Depends(get_current_us
         Record.snapshot_tag.is_distinct_from("delivery")))
     if later_min is not None and body.odometer_km > later_min + 0.5:
         raise HTTPException(400, f"提车里程不能大于之后记录的里程（{later_min:,.0f} km）")
+    seal_legacy_segment_marks(db, v)
     updated = 0
     if snap:
         old_ts, old_odo = snap.occurred_at, snap.odometer_km

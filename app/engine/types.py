@@ -57,7 +57,7 @@ class Rec:
     charge_full: bool = False
     soc_before: Optional[float] = None
     soc_after: Optional[float] = None
-    cost_cents: int = 0
+    cost_cents: Optional[int] = None
     extra_cents: int = 0
     missed_before: bool = False
     snapshot_tag: Optional[str] = None
@@ -90,6 +90,7 @@ class Summary:
 class Mark:
     tag: str = "normal"
     excluded: bool = False
+    start_id: Optional[int] = None
 
 
 @dataclass
@@ -121,6 +122,7 @@ class Segment:
     excluded: bool = False
     anomaly: Optional[str] = None  # high | low | parked
     cost_cents: Optional[int] = None
+    anchor: Optional[str] = None  # 满到满或油表读数
     # 综合段专用
     elec_kwh: Optional[float] = None
     elec_err: Optional[float] = None

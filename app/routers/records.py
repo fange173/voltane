@@ -21,13 +21,17 @@ from app.engine.aggregate import avg_daily_km, odo_observations, segment_dict
 from app.engine.ledger import equiv_per100
 from app.insights import explain, latest_odo_of
 from app.services import (
+    active_records,
     active_summaries,
     bump,
+    iso,
     load_expenses,
     load_ledger,
     log_activity,
     record_dict,
     record_summary_text,
+    seal_legacy_segment_marks,
+    segment_mark_note,
     summary_dict,
     users_map,
 )
@@ -146,20 +150,38 @@ def _fill(r: Record, body: RecordIn, v: Vehicle) -> None:
     r.note = (body.note or "").strip()
 
 
-def _warnings(db: Session, v: Vehicle, r: Record) -> list[str]:
+def _form_time_key(ts: datetime, expense: bool, entity_id: int) -> tuple:
+    return (ts.replace(second=0, microsecond=0), ts, expense, entity_id)
+
+
+def _odometer_rows(records, expenses) -> list:
+    return [(r.occurred_at, False, r.id, r.odometer_km) for r in records
+            if r.odometer_km is not None and not r.odometer_estimated and r.status == "done"] + [
+                (e.ts, True, e.id, e.odo) for e in expenses if e.odo is not None
+            ]
+
+
+def _warnings(db: Session, v: Vehicle, r: Record, previous_time: Optional[datetime] = None) -> list[str]:
     """只提示不阻止：里程顺序矛盾、增量过大、数量超出容量、单价异常。"""
     out = []
     if r.odometer_km is not None and not r.odometer_estimated:
-        base = select(Record).where(Record.vehicle_id == v.id, Record.deleted_at.is_(None), Record.id != (r.id or 0),
-                                    Record.odometer_km.is_not(None), Record.odometer_estimated.is_(False))
-        prev = db.scalar(base.where(Record.occurred_at <= r.occurred_at).order_by(Record.occurred_at.desc()).limit(1))
-        nxt = db.scalar(base.where(Record.occurred_at > r.occurred_at).order_by(Record.occurred_at).limit(1))
-        if prev and prev.odometer_km > r.odometer_km + 0.5:
-            out.append(f"里程小于 {prev.occurred_at:%m-%d} 那条记录的 {prev.odometer_km:,.0f}")
-        if nxt and nxt.odometer_km < r.odometer_km - 0.5:
-            out.append(f"里程大于之后 {nxt.occurred_at:%m-%d} 那条记录的 {nxt.odometer_km:,.0f}")
-        if prev and r.odometer_km - prev.odometer_km > 2000:
-            out.append(f"距上次记录行驶了 {r.odometer_km - prev.odometer_km:,.0f}km，请确认里程")
+        minute = r.occurred_at.replace(second=0, microsecond=0)
+        key = (minute, datetime.max, True, 0)
+        if previous_time and previous_time.replace(second=0, microsecond=0) == minute:
+            key = _form_time_key(previous_time, False, r.id)
+        rows = _odometer_rows(active_records(db, v.id), load_expenses(db, v.id))
+        rows = sorted((row for row in rows if row[1] or row[2] != r.id),
+                      key=lambda row: _form_time_key(*row[:3]))
+        prev = next((row for row in reversed(rows) if _form_time_key(*row[:3]) < key), None)
+        if prev is None and v.delivery_date and v.initial_odometer_km is not None and v.delivery_date < r.occurred_at.date():
+            prev = (datetime.combine(v.delivery_date, datetime.min.time()), False, 0, v.initial_odometer_km)
+        nxt = next((row for row in rows if _form_time_key(*row[:3]) > key), None)
+        if prev and prev[3] > r.odometer_km + 0.5:
+            out.append(f"里程小于 {prev[0]:%m-%d} 那条记录的 {prev[3]:,.0f}")
+        if nxt and nxt[3] < r.odometer_km - 0.5:
+            out.append(f"里程大于之后 {nxt[0]:%m-%d} 那条记录的 {nxt[3]:,.0f}")
+        if prev and r.odometer_km - prev[3] > 2000:
+            out.append(f"距上次记录行驶了 {r.odometer_km - prev[3]:,.0f}km，请确认里程")
     if r.kind == "fuel" and r.fuel_liters and v.tank_capacity_l and r.fuel_liters > v.tank_capacity_l * 1.05:
         out.append(f"加油量超过油箱容积 {v.tank_capacity_l:g}L")
     if r.kind == "fuel" and r.fuel_unit_price and not 4 <= r.fuel_unit_price <= 13:
@@ -246,6 +268,7 @@ def create_record(body: RecordIn, user: User = Depends(get_current_user), db: Se
                 "message": f"可能重复：{by['name'] if by else '有人'} 已在 {dup.occurred_at:%H:%M} 记录过一条相同的{record_summary_text(dup)}",
             }})
     warnings = _warnings(db, v, r)
+    seal_legacy_segment_marks(db, v)
     db.add(r)
     _touch_place(place, r)
     if r.status == "done":
@@ -274,7 +297,10 @@ def update_record(rid: int, body: RecordIn, user: User = Depends(get_current_use
             "code": "conflict", "record": record_dict(r, umap),
             "message": f"这条记录刚被 {by['name'] if by else '别人'} 修改过，已显示最新内容",
         }})
+    seal_legacy_segment_marks(db, v)
+    before = load_ledger(db, v)
     was_progress = r.status == "in_progress"
+    previous_time = None if was_progress else r.occurred_at
     _fill(r, body, v)
     place, pname = _resolve_place(db, v, user, body)
     if place and place.id != r.place_id:
@@ -285,13 +311,21 @@ def update_record(rid: int, body: RecordIn, user: User = Depends(get_current_use
     if r.snapshot_tag == "delivery" and r.odometer_km is not None and not r.odometer_estimated:
         v.initial_odometer_km = r.odometer_km
         v.delivery_date = r.occurred_at.date()
-    warnings = _warnings(db, v, r)
+    warnings = _warnings(db, v, r, previous_time)
     bump(v)
     text = ("结束充电，" + record_summary_text(r)) if (was_progress and r.status == "done") else "修改了" + record_summary_text(r)
     log_activity(db, v.id, user, "update", "record", r.id, text)
     db.commit()
+    after = load_ledger(db, v)
     preview = _segment_preview(db, v, r.id) if r.status == "done" else []
-    return {"record": record_dict(r, users_map(db, [r.created_by, user.id])), "warnings": warnings, "segments": preview}
+
+    def segments_of(ledger):
+        return {(s.energy, s.start_id, s.end_id): s
+                for group in (ledger.combined_segments, ledger.fuel_segments, ledger.elec_segments) for s in group}
+    old_segments, new_segments = segments_of(before), segments_of(after)
+    changed = sum(old_segments.get(key) != new_segments.get(key) for key in old_segments.keys() | new_segments.keys())
+    return {"record": record_dict(r, users_map(db, [r.created_by, user.id])), "warnings": warnings,
+            "segments": preview, "changed_segments": changed}
 
 
 @router.delete("/records/{rid}")
@@ -302,6 +336,7 @@ def delete_record(rid: int, user: User = Depends(get_current_user), db: Session 
     v, role = require_vehicle(db, user, r.vehicle_id, "editor")
     if not can_delete_entity(role, user, r.created_by):
         raise HTTPException(403, "只能删除自己记的记录")
+    seal_legacy_segment_marks(db, v)
     r.deleted_at = utcnow()
     if r.snapshot_tag == "delivery":
         # 提车快照删了，起始里程也随之失效，否则首月里程仍按旧值计算
@@ -320,6 +355,7 @@ def restore_record(rid: int, user: User = Depends(get_current_user), db: Session
     v, role = require_vehicle(db, user, r.vehicle_id, "editor")
     if not can_delete_entity(role, user, r.created_by):
         raise HTTPException(403, "只能恢复自己记的记录")
+    seal_legacy_segment_marks(db, v)
     r.deleted_at = None
     if r.snapshot_tag == "delivery" and r.odometer_km is not None:
         v.initial_odometer_km = r.odometer_km
@@ -418,7 +454,7 @@ def _badges(led) -> dict:
                 continue
             d = {"energy": energy, "per100": round(s.per100, 2) if s.per100 is not None else None,
                  "quality": s.quality, "kind": s.kind, "anomaly": s.anomaly, "tag": s.tag, "excluded": s.excluded,
-                 "per_day": round(s.idle_amount / s.days, 2) if s.kind == "idle" and s.amount and s.days > 0 else None}
+                 "per_day": round(s.idle_amount / s.days, 2) if s.kind == "idle" and s.distance < 1 and s.amount is not None and s.days > 0 else None}
             out.setdefault(s.end_id, []).append(d)
     # 综合段只在有异常时出徽章，数值用折合油耗
     for s in led.combined_segments:
@@ -431,12 +467,14 @@ def _badges(led) -> dict:
 
 
 @router.get("/records/prefill")
-def prefill(vehicle_id: int, kind: Literal["fuel", "charge", "snapshot"] = "fuel",
+def prefill(vehicle_id: int, kind: Literal["fuel", "charge", "snapshot", "expense"] = "fuel",
+            timeline: bool = False,
             user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """表单预填：上次里程和里程时间轴、同类上一条（「同上次」用）、常用地点排序、k、日均里程。"""
     v, _ = require_vehicle(db, user, vehicle_id)
     led = load_ledger(db, v)
-    obs = odo_observations(led, load_expenses(db, v.id))
+    expenses = load_expenses(db, v.id)
+    obs = odo_observations(led, expenses)
     last = db.scalar(select(Record).where(Record.vehicle_id == v.id, Record.kind == kind, Record.deleted_at.is_(None),
                                           Record.status == "done").order_by(Record.occurred_at.desc()).limit(1))
     last_soc = None
@@ -452,7 +490,7 @@ def prefill(vehicle_id: int, kind: Literal["fuel", "charge", "snapshot"] = "fuel
     in_progress = db.scalars(select(Record).where(Record.vehicle_id == v.id, Record.status == "in_progress",
                                                   Record.deleted_at.is_(None)).order_by(Record.occurred_at.desc()))
     last_obs = max(obs, key=lambda o: (o[1], o[0])) if obs else None
-    return {
+    out = {
         "last_odo": latest_odo_of(obs, v),
         "last_odo_ts": last_obs[0].isoformat(timespec="minutes") if last_obs else None,
         # 按时间排好的里程读数，补录时用来找所选时间前后的读数
@@ -467,6 +505,32 @@ def prefill(vehicle_id: int, kind: Literal["fuel", "charge", "snapshot"] = "fuel
         "in_progress": [record_dict(r) for r in in_progress],
         "recent_notes": _recent_notes(db, v.id),
     }
+
+    if timeline:
+        ordered = []
+        points = {p.id: p for p in led.points}
+        for r in active_records(db, v.id):
+            if r.status != "done":
+                continue
+            p = points.get(r.id)
+            level = p.elec[1] if p else None
+            soc = min(100, round(level.value / led.calib.k)) if level and led.calib.k else (
+                (r.soc_after_pct if r.kind == "charge" else r.soc_before_pct)
+            )
+            item = {"time": iso(r.occurred_at), "id": r.id, "odo": None if r.odometer_estimated else r.odometer_km,
+                    "soc": soc}
+            if r.kind == kind:
+                item["same"] = {k: getattr(r, k) for k in
+                                ("fuel_grade", "charge_type", "fuel_unit_price", "fuel_is_full", "place_id", "place_name")}
+            ordered.append((_form_time_key(r.occurred_at, False, r.id), item))
+        for e in expenses:
+            if e.odo is not None:
+                ordered.append((_form_time_key(e.ts, True, e.id),
+                                {"time": iso(e.ts), "id": e.id, "expense": True, "odo": e.odo}))
+        out["timeline"] = [item for _, item in sorted(ordered, key=lambda row: row[0])]
+        if v.delivery_date is not None and v.initial_odometer_km is not None:
+            out["delivery_odo"] = [v.delivery_date.isoformat(), v.initial_odometer_km]
+    return out
 
 
 def _recent_notes(db: Session, vid: int) -> list[str]:
@@ -488,7 +552,8 @@ def _sorted_places(db: Session, v: Vehicle, user: User, kind: str) -> list[dict]
     rows = list(db.scalars(select(Place).where(
         or_(Place.vehicle_id == v.id, (Place.vehicle_id.is_(None)) & (Place.owner_user_id == user.id)),
         Place.is_hidden.is_(False))))
-    match = {"fuel": ("gas_station",), "charge": ("home_charger", "charge_station"), "snapshot": ()}[kind]
+    match = {"fuel": ("gas_station",), "charge": ("home_charger", "charge_station"),
+             "snapshot": (), "expense": ()}[kind]
     rows.sort(key=lambda p: (p.kind not in match, p.sort_order, -(p.use_count or 0),
                              -(p.last_used_at.timestamp() if p.last_used_at else 0)))
     return [place_dict(p) for p in rows]
@@ -618,6 +683,7 @@ def delete_summary(sid: int, user: User = Depends(get_current_user), db: Session
 class MarkIn(BaseModel):
     vehicle_id: int
     end_record_id: int
+    start_record_id: Optional[int] = None
     energy: Literal["fuel", "elec", "combined"]
     tag: str = "normal"
     excluded: bool = False
@@ -635,6 +701,12 @@ class MarkIn(BaseModel):
 def mark_segment(body: MarkIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """综合段与同区间的油段一一对应，标记综合段时油段一起标。"""
     v, _ = require_vehicle(db, user, body.vehicle_id, "editor")
+    led = load_ledger(db, v)
+    groups = {"fuel": led.fuel_segments, "elec": led.elec_segments, "combined": led.combined_segments}
+    target = next((s for s in groups[body.energy] if s.end_id == body.end_record_id
+                   and (body.start_record_id is None or s.start_id == body.start_record_id)), None)
+    if target is None:
+        raise HTTPException(409, "分段已经变化，请重新打开记录后再标记")
     for energy in [body.energy] + (["fuel"] if body.energy == "combined" else []):
         m = db.get(SegmentMark, (v.id, body.end_record_id, energy))
         if body.tag == "normal" and not body.excluded:
@@ -644,7 +716,8 @@ def mark_segment(body: MarkIn, user: User = Depends(get_current_user), db: Sessi
         if not m:
             m = SegmentMark(vehicle_id=v.id, end_record_id=body.end_record_id, energy=energy)
             db.add(m)
-        m.tag, m.excluded, m.note, m.updated_by = body.tag, body.excluded, body.note, user.id
+        m.tag, m.excluded, m.updated_by = body.tag, body.excluded, user.id
+        m.note = segment_mark_note(target.start_id, body.note)
     bump(v)
     log_activity(db, v.id, user, "update", "segment", body.end_record_id, "调整了一段能耗的标签")
     db.commit()

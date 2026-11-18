@@ -46,6 +46,8 @@ const EST_NAME = {
   charge_kwh: "charge_kwh",
   soc_after_pct: "soc_after",
   soc_before_pct: "soc_before",
+  fuel_unit_price: "fuel_unit_price",
+  amount: "paid_cents",
 };
 
 /* ---------- 字段渲染 ---------- */
@@ -110,10 +112,9 @@ function timeField(value) {
     <input class="input" type="datetime-local" name="occurred_at" value="${value}" max="${localISO(new Date(Date.now() + 86400000))}"></div>`;
 }
 
-function odoField(prefill) {
-  const last = prefill?.last_odo;
+function odoField() {
   return html`<div class="field" data-f="odo"><label>里程<span class="odo-delta muted tiny" style="margin-left:auto"></span></label>
-    <div class="input-wrap"><input class="input num big-input" name="odometer_km" inputmode="numeric" placeholder="${last != null ? "上次 " + km(last) : "仪表盘总里程"}"><span class="unit">km</span></div>
+    <div class="input-wrap"><input class="input num big-input" name="odometer_km" inputmode="numeric" placeholder="仪表盘总里程"><span class="unit">km</span></div>
     <div class="row wrap tiny">
       <label class="mini-check"><input type="checkbox" name="trip_mode"> 按本次行驶输入</label>
       <label class="mini-check"><input type="checkbox" name="odo_unknown"> 不确定里程</label>
@@ -161,7 +162,8 @@ export async function openRecordForm({ kind = "fuel", record = null, finish = fa
           const b = e.target.closest("button[data-v]");
           if (!b || b.dataset.v === st.kind) return;
           $$("button", seg).forEach((x) => x.classList.toggle("on", x === b));
-          const keep = snapshotCommon(body);
+          clearTimeout(st.draftT);
+          const keep = snapshotCommon(body, st);
           st.kind = b.dataset.v;
           ctx.setTitle(KIND_TITLE[st.kind]);
           renderForm(body, ctx, v, st, { record: null, keep, preset: {} });
@@ -172,9 +174,13 @@ export async function openRecordForm({ kind = "fuel", record = null, finish = fa
   });
 }
 
-function snapshotCommon(body) {
+function snapshotCommon(body, st) {
   const f = $("form", body);
-  return { occurred_at: f.occurred_at?.value, odometer_km: f.odometer_km?.value, note: f.note?.value };
+  const trip = f.trip_mode?.checked;
+  const base = trip ? formNeighbors(st, f.occurred_at.value).prev?.[1] : null;
+  const odo = toNum(f.odometer_km?.value);
+  const total = trip ? (base != null && odo != null ? base + odo : null) : odo;
+  return { occurred_at: f.occurred_at?.value, odometer_km: total, note: f.note?.value };
 }
 
 async function renderForm(body, ctx, v, st, { record, finish = false, keep = null, preset = {} }) {
@@ -185,16 +191,21 @@ async function renderForm(body, ctx, v, st, { record, finish = false, keep = nul
   st.est = new Set(st.estSticky);
   st.lastEdited = [];
   st.place = null;
+  st.limitSoc = record?.charge_to_limit ? record.soc_after_pct : null;
+  st.limitSocIsUser = st.limitSoc != null && !st.estSticky.has("soc_after");
   form.innerHTML = `<div class="skeleton" style="height:220px"></div>`;
   ctx.setFoot("");
-  if (kind !== "expense") {
-    try {
-      st.prefill = await api(`/api/records/prefill?vehicle_id=${v.id}&kind=${kind}`);
-    } catch (e) {
-      st.prefill = { places: [], recent_notes: [] };
-      if (e.status !== 0) toastError(e);
-    }
+  const request = Symbol();
+  st.prefillRequest = request;
+  let prefill;
+  try {
+    prefill = await api(`/api/records/prefill?vehicle_id=${v.id}&kind=${kind}&timeline=true`);
+  } catch (e) {
+    prefill = { places: [], recent_notes: [] };
+    if (e.status !== 0 && st.prefillRequest === request && form.isConnected) toastError(e);
   }
+  if (st.prefillRequest !== request || !form.isConnected) return;
+  st.prefill = prefill;
   const time = record?.occurred_at || keep?.occurred_at || localISO();
   const detailed = v.record_style !== "simple";
 
@@ -221,7 +232,7 @@ async function renderForm(body, ctx, v, st, { record, finish = false, keep = nul
     ${kind === "snapshot" ? html`<p class="hint-text">${raw(icon("info", 16))}出发前、长时间停车前后记一下，可以把哨兵等静置耗电单独统计出来。电量和油量记得哪个填哪个，不确定的留空。</p>` : ""}
     ${!record && p?.last ? html`<div class="row between"><span class="tiny muted">上次：${fmtDate(p.last.occurred_at)} ${p.last.place_name || ""}</span><button type="button" class="link-btn tiny" data-same>${raw(icon("copy", 14))} 同上次</button></div>` : ""}
     ${timeField(time)}
-    ${odoField(p)}
+    ${odoField()}
     ${kind === "fuel" ? html`
       <div class="field"><label>标号</label><div class="chips" data-grade>${FUEL_GRADES.map((g) => html`<button type="button" class="chip sm" data-v="${g}">${gradeLabel(g)}</button>`)}</div></div>
       ${moneyTriple("fuel")}
@@ -230,7 +241,7 @@ async function renderForm(body, ctx, v, st, { record, finish = false, keep = nul
     ${kind === "charge" ? html`
       <div class="field"><label>方式</label><div class="chips" data-ctype>${Object.entries(CHARGE_LABEL).map(([k, l]) => html`<button type="button" class="chip sm" data-v="${k}">${l}</button>`)}</div></div>
       <div class="grid-2 soc-pair">${levelField("soc_before_pct", "开始 SOC")}${levelField("soc_after_pct", "结束 SOC")}</div>
-      <label class="switch"><span class="switch-text"><span>充到上限（${num(v.charge_limit_pct)}%）</span><small>勾选后结束 SOC 按上限算</small></span><input type="checkbox" name="charge_to_limit"><span class="track"></span></label>
+      <label class="switch"><span class="switch-text"><span data-charge-limit>充到上限（${num(st.limitSoc ?? v.charge_limit_pct)}%）</span><small>勾选后结束 SOC 按上限算</small></span><input type="checkbox" name="charge_to_limit"><span class="track"></span></label>
       ${moneyTriple("charge")}
       <div class="tariff-note tiny muted hidden"></div>` : ""}
     ${kind === "snapshot" ? html`${levelBlock(false)}
@@ -295,6 +306,7 @@ function wireCommon(form, v, st) {
     if (el) {
       bindChips(el, { onChange: () => {
         form.dataset[name] = $(".chip.on", el)?.dataset.v || "";
+        if (name === "charge_type") invalidateEstimates(form, st, name);
         recompute(form, v, st);
       } });
     }
@@ -338,11 +350,17 @@ function wireCommon(form, v, st) {
   });
   // 同上次
   $("[data-same]", form)?.addEventListener("click", () => {
-    const l = st.prefill.last;
-    if (!l) return;
+    const l = formNeighbors(st, form.occurred_at.value).same;
+    if (!l) return toast("所选时间之前没有同类记录");
+    invalidateEstimates(form, st, "fuel_unit_price");
+    invalidateEstimates(form, st, "charge_type");
+    invalidateEstimates(form, st, "fuel_is_full");
     if (l.fuel_grade) selectChip(form, "[data-grade]", "fuel_grade", l.fuel_grade);
     if (l.charge_type) selectChip(form, "[data-ctype]", "charge_type", l.charge_type);
-    if (st.kind === "fuel" && l.fuel_unit_price != null) setUser(form.fuel_unit_price, l.fuel_unit_price);
+    if (st.kind === "fuel" && l.fuel_unit_price != null) {
+      unstick(st, "fuel_unit_price");
+      setUser(form.fuel_unit_price, l.fuel_unit_price);
+    }
     if (l.place_id) {
       const pl = st.prefill.places.find((p) => p.id === l.place_id);
       if (pl) setPlace(form, v, st, pl);
@@ -363,16 +381,26 @@ function wireCommon(form, v, st) {
         if (t.value.trim()) st.lastEdited.push(t.name);
       }
       unstick(st, t.name);
+      invalidateEstimates(form, st, t.name);
     }
     recompute(form, v, st);
     saveDraft(form, v, st);
   });
   form.addEventListener("change", (e) => {
     if (e.target.type === "checkbox") {
+      if (e.target.name === "charge_to_limit") {
+        st.limitSoc = null;
+        st.limitSocIsUser = false;
+        $("[data-charge-limit]", form).textContent = `充到上限（${num(v.charge_limit_pct)}%）`;
+      }
       if (e.target.name === "odo_unknown") {
         form.odometer_km.disabled = e.target.checked;
         if (e.target.checked) form.odometer_km.value = "";
       }
+      invalidateEstimates(form, st, e.target.name);
+      recompute(form, v, st);
+      saveDraft(form, v, st);
+    } else if (e.target.name === "occurred_at") {
       recompute(form, v, st);
       saveDraft(form, v, st);
     }
@@ -391,6 +419,7 @@ function wireLevels(form, v, st) {
       range.classList.remove("unset");
       clearAuto(inp);
       unstick(st, inp.name);
+      invalidateEstimates(form, st, inp.name);
       recompute(form, v, st);
       saveDraft(form, v, st);
     });
@@ -405,7 +434,11 @@ function wireLevels(form, v, st) {
       const cur = hidden.value ? Math.round((+hidden.value / 100) * n) : 0;
       hidden.value = cur === k ? "" : ((k / n) * 100).toFixed(1);
       hidden.dataset.user = hidden.value ? "1" : "";
+      clearAuto(hidden);
+      unstick(st, hidden.name);
+      invalidateEstimates(form, st, hidden.name);
       recompute(form, v, st);
+      saveDraft(form, v, st);
     });
   });
   $$("[data-liters]", form).forEach((f) => {
@@ -419,6 +452,7 @@ function wireLevels(form, v, st) {
       lit.classList.remove("auto");
       syncLevel(pct);
       unstick(st, pct.name);
+      invalidateEstimates(form, st, pct.name);
       recompute(form, v, st);
       saveDraft(form, v, st);
     });
@@ -437,6 +471,28 @@ function unstick(st, fieldName) {
   if (!n) return;
   st.est.delete(n);
   st.estSticky.delete(n);
+}
+
+const EST_DEPENDENCIES = {
+  soc_after_pct: ["soc_before_pct", "charge_kwh", "charge_type", "charge_to_limit"],
+  fuel_level_before_pct: ["fuel_liters", "fuel_is_full", "fuel_unit_price", "amount"],
+  fuel_level_after_pct: ["fuel_level_before_pct", "fuel_liters", "fuel_is_full", "fuel_unit_price", "amount"],
+  fuel_liters: ["fuel_level_before_pct", "fuel_is_full", "fuel_unit_price", "amount"],
+  fuel_unit_price: ["fuel_liters", "amount", "fuel_level_before_pct", "fuel_is_full"],
+  amount: ["fuel_liters", "fuel_unit_price", "fuel_level_before_pct", "fuel_is_full"],
+};
+
+function invalidateEstimates(form, st, source) {
+  if (!st.record || st.record.source === "auto_fix") return;
+  for (const [field, inputs] of Object.entries(EST_DEPENDENCIES)) {
+    const estimate = EST_NAME[field];
+    if (!form[field] || !st.estSticky.has(estimate) || !inputs.includes(source)) continue;
+    // 历史手工估算的快照油量没有可重算的来源。
+    if (field.startsWith("fuel_") && st.kind !== "fuel") continue;
+    if (field === "amount" && st.kind !== "fuel") continue;
+    setUser(form[field], "");
+    unstick(st, field);
+  }
 }
 
 function selectChip(form, sel, name, value) {
@@ -523,9 +579,17 @@ function setPlace(form, v, st, place, { defaults = true } = {}) {
     if (place && !place.id) $("[data-save-place]", ps).textContent = `存为常用地点「${place.name}」`;
   }
   if (place?.id && defaults) {
-    if (st.kind === "charge" && place.default_charge_type) selectChip(form, "[data-ctype]", "charge_type", place.default_charge_type);
+    if (st.kind === "charge" && place.default_charge_type && place.default_charge_type !== form.dataset.charge_type) {
+      invalidateEstimates(form, st, "charge_type");
+      selectChip(form, "[data-ctype]", "charge_type", place.default_charge_type);
+    }
     if (st.kind === "fuel" && place.default_fuel_grade) selectChip(form, "[data-grade]", "fuel_grade", place.default_fuel_grade);
-    if (st.kind === "fuel" && !form.fuel_unit_price.dataset.user && place.last_unit_price) setUser(form.fuel_unit_price, place.last_unit_price);
+    if (st.kind === "fuel" && place.last_unit_price != null &&
+      (!isUser(form, "fuel_unit_price") || st.estSticky.has("fuel_unit_price"))) {
+      invalidateEstimates(form, st, "fuel_unit_price");
+      unstick(st, "fuel_unit_price");
+      setUser(form.fuel_unit_price, place.last_unit_price);
+    }
   }
   recompute(form, v, st);
 }
@@ -604,14 +668,6 @@ function applyDefaults(form, v, st, kind, keep, preset) {
   if (pref("place_default", "none") === "top" && st.prefill.places?.length && kind !== "snapshot") {
     setPlace(form, v, st, st.prefill.places[0]);
   }
-  // 当前电量 / 油量只做占位提示，不当成值
-  const p = st.prefill;
-  if (p?.last_soc != null) {
-    $$('input[name="soc_before_pct"]', form).forEach((i) => {
-      i.placeholder = String(p.last_soc);
-      i.title = `上次记录后的电量 ${p.last_soc}%`;
-    });
-  }
     $$("[data-t]", form)[0]?.classList.add("on");
 }
 
@@ -636,7 +692,7 @@ function fillRecord(form, v, st, r, finish) {
   if (r.kind === "fuel") {
     selectChip(form, "[data-grade]", "fuel_grade", r.fuel_grade || "92");
     put("fuel_liters", r.fuel_liters, "fuel_l");
-    put("fuel_unit_price", r.fuel_unit_price);
+    put("fuel_unit_price", r.fuel_unit_price, "fuel_unit_price");
     form.fuel_is_full.checked = !!r.fuel_is_full;
     put("fuel_level_before_pct", r.fuel_level_before_pct, "fuel_before_pct");
     put("fuel_level_after_pct", r.fuel_level_after_pct, "fuel_after_pct");
@@ -661,7 +717,7 @@ function fillRecord(form, v, st, r, finish) {
     selectChip(form, "[data-snap]", "snapshot_tag", r.snapshot_tag || "other");
     put("fuel_level_before_pct", r.fuel_level_before_pct, "fuel_before_pct");
   }
-  if (r.amount_cents != null && form.amount) setUser(form.amount, r.amount_cents / 100);
+  if (r.amount_cents != null && form.amount) put("amount", r.amount_cents / 100, "paid_cents");
   if (r.extra_fee_cents != null && form.extra_fee) setUser(form.extra_fee, r.extra_fee_cents / 100);
   if (form.missed_before) form.missed_before.checked = !!r.missed_before;
     form.note.value = r.note || "";
@@ -771,9 +827,16 @@ function recompute(form, v, st) {
     const vq = val(form, q);
     const vp = val(form, p);
     const va = val(form, "amount");
-    if (has(q) && has(p) && !has("amount") && !isUser(form, "amount")) setAuto(form.amount, vq * vp, 2);
-    else if (has(q) && has("amount") && !has(p) && !isUser(form, p) && vq > 0) setAuto(form[p], va / vq, kind === "fuel" ? 2 : 3);
-    else if (has(p) && has("amount") && !has(q) && !isUser(form, q) && vp > 0) setAuto(form[q], va / vp, 2);
+    if (has(q) && has(p) && !has("amount") && !isUser(form, "amount")) {
+      setAuto(form.amount, vq * vp, 2);
+      markEst("amount");
+    } else if (has(q) && has("amount") && !has(p) && !isUser(form, p) && vq > 0) {
+      setAuto(form[p], va / vq, 2);
+      markEst(p);
+    } else if (has(p) && has("amount") && !has(q) && !isUser(form, q) && vp > 0) {
+      setAuto(form[q], va / vp, 2);
+      markEst(q);
+    }
   };
 
   // 2. 优先用用户填的两项算第三项（加油机上的金额和单价最准）
@@ -810,8 +873,13 @@ function recompute(form, v, st) {
       if (rg) rg.disabled = on;
     };
     if (toLimit) {
-      delete form.soc_after_pct.dataset.user;
-      setAuto(form.soc_after_pct, v.charge_limit_pct ?? 100, 0);
+      if (st.limitSocIsUser) {
+        setUser(form.soc_after_pct, st.limitSoc);
+      } else {
+        delete form.soc_after_pct.dataset.user;
+        setAuto(form.soc_after_pct, st.limitSoc ?? v.charge_limit_pct ?? 100, 0);
+        markEst("soc_after_pct");
+      }
     }
     lockLimit(toLimit);
     const s0 = val(form, "soc_before_pct");
@@ -851,23 +919,42 @@ function recompute(form, v, st) {
   });
 }
 
-/** 所选时间前后最近的两次里程读数；没有时间轴数据时退回最新里程。 */
-function odoNeighbors(st, t) {
-  const pts = st.prefill?.odo_points;
-  if (!pts?.length || !t) return { prev: st.prefill?.last_odo != null ? [st.prefill.last_odo_ts, st.prefill.last_odo] : null, next: null };
+function formNeighbors(st, time) {
   let prev = null;
   let next = null;
-  for (const p of pts) {
-    if (p[0] < t) prev = p;
-    else if (p[0] > t && !next) next = p;
+  let same = null;
+  let soc = null;
+  if (!time) return { prev, next, same, soc };
+  const minute = time.slice(0, 16);
+  const expense = st.kind === "expense";
+  const timeline = st.prefill?.timeline || [];
+  const ownIndex = st.record ? timeline.findIndex((p) => p.id === st.record.id && !!p.expense === expense) : -1;
+  const sameMinuteBoundary = timeline[ownIndex]?.time === minute ? ownIndex : Infinity;
+  for (const [i, p] of timeline.entries()) {
+    if (i === ownIndex) continue;
+    const before = p.time < minute || (p.time === minute && i < sameMinuteBoundary);
+    if (before) {
+      if (p.odo != null) prev = [p.time, p.odo];
+      if (p.soc != null) soc = p.soc;
+      if (p.same) same = p.same;
+    } else if (p.odo != null && !next) {
+      next = [p.time, p.odo];
+    }
   }
-  return { prev, next };
+  const delivery = st.prefill?.delivery_odo;
+  if (!prev && delivery?.[0] < minute.slice(0, 10)) prev = delivery;
+  return { prev, next, same, soc };
 }
 
 function updateOdoDelta(form, st) {
   const el = $(".odo-delta", form);
   if (!el) return;
-  const { prev, next } = odoNeighbors(st, form.occurred_at.value);
+  const { prev, next, soc } = formNeighbors(st, form.occurred_at.value);
+  const socInput = form.soc_before_pct;
+  if (socInput) {
+    socInput.placeholder = soc == null ? "" : String(soc);
+    socInput.title = soc == null ? "" : `上次记录后的电量 ${soc}%`;
+  }
   const last = prev?.[1];
   const trip = form.trip_mode?.checked;
   const raw = toNum(form.odometer_km.value);
@@ -875,6 +962,11 @@ function updateOdoDelta(form, st) {
   el.classList.remove("warn-c");
   if (form.odo_unknown?.checked) {
     el.textContent = "里程按前后记录推算";
+    return;
+  }
+  if (trip && last == null) {
+    el.textContent = "没有上次里程，请填仪表盘总里程";
+    el.classList.add("warn-c");
     return;
   }
   if (raw == null || last == null) {
@@ -899,7 +991,7 @@ function collect(form, v, st, { startOnly = false } = {}) {
   const kind = st.kind;
   const trip = form.trip_mode?.checked;
   let odo = form.odo_unknown?.checked ? null : toNum(form.odometer_km.value);
-  const prevOdo = odoNeighbors(st, form.occurred_at.value).prev?.[1];
+  const prevOdo = formNeighbors(st, form.occurred_at.value).prev?.[1];
   if (odo != null && trip && prevOdo != null) odo = prevOdo + odo;
   const cents = (n) => {
     const x = val(form, n);
@@ -917,7 +1009,7 @@ function collect(form, v, st, { startOnly = false } = {}) {
     source: st.record?.source || (parseLocal(form.occurred_at.value) < new Date(Date.now() - 7 * 86400000) ? "backfill" : "manual"),
     note: form.note.value.trim(),
     missed_before: !!form.missed_before?.checked,
-        amount_cents: amount,
+    amount_cents: amount,
     extra_fee_cents: cents("extra_fee"),
     soc_before_pct: val(form, "soc_before_pct"),
     fuel_level_before_pct: val(form, "fuel_level_before_pct"),
@@ -956,6 +1048,10 @@ function collect(form, v, st, { startOnly = false } = {}) {
 }
 
 function validate(form, b, st) {
+  if (!form.occurred_at.value) return "请选择记录时间";
+  if (form.trip_mode?.checked && !form.odo_unknown?.checked && !formNeighbors(st, form.occurred_at.value).prev) {
+    return "没有上次里程，请取消「按本次行驶输入」后填写总里程";
+  }
   if (b.odometer_km == null && !form.odo_unknown?.checked) return "请填写里程，或勾选「不确定里程」";
   if (b.kind === "snapshot" && b.odometer_km == null && b.soc_before_pct == null && b.fuel_level_before_pct == null) return "快照至少要填里程、电量或油量中的一项";
   if (b.kind === "fuel" && b.status === "done" && b.fuel_liters == null && b.amount_cents == null) return "请至少填写加油量或金额";
@@ -1058,14 +1154,15 @@ function afterSave(res, record, startOnly) {
   const elec = all.find((s) => s.energy === "elec" && s.kind === "short" && s.distance < 5);
   if (elec) {
     actions.push({ label: "标记静置", onClick: async () => {
-      await api("/api/segments", { method: "PATCH", body: { vehicle_id: r.vehicle_id, end_record_id: r.id, energy: "elec", tag: "idle" } });
+      await api("/api/segments", { method: "PATCH", body: { vehicle_id: r.vehicle_id, end_record_id: r.id, start_record_id: elec.start_id, energy: "elec", tag: "idle" } });
       emit("data-changed");
       toast("已把这段标记为静置", { sub: "行驶的几公里按平时电耗估算，其余算静置损耗" });
     } });
   }
   if (!seg) {
     const finished = record?.status === "in_progress";
-    toast(finished ? "充电已结束" : record ? "已保存" : "已记录", { sub: finished && r.charge_kwh ? `本次 ${num(r.charge_kwh)} kWh · ${money(r.amount_cents)}` : "", actions });
+    toast(finished ? "充电已结束" : record ? "已保存" : "已记录", { sub: finished && r.charge_kwh ? `本次 ${num(r.charge_kwh)} kWh · ${money(r.amount_cents)}` :
+      res.changed_segments ? "相关能耗分段已重新计算" : "", actions });
     return;
   }
   let text;
@@ -1106,6 +1203,12 @@ function renderExpense(form, ctx, v, st, { record, time, keep, preset }) {
     <div class="form-error"></div>`);
   let category = cat;
   const insBlock = $(".ins-block", form);
+  const updatePlaceholder = () => {
+    const last = formNeighbors(st, form.occurred_at.value).prev?.[1];
+    form.odometer_km.placeholder = last == null ? "仪表盘总里程" : "上次 " + km(last);
+  };
+  form.occurred_at.addEventListener("input", updatePlaceholder);
+  form.occurred_at.addEventListener("change", updatePlaceholder);
   const syncCat = () => {
     insBlock.classList.toggle("hidden", category !== "insurance");
     if (category === "insurance" && !form.period_start.value) {
@@ -1154,6 +1257,7 @@ function renderExpense(form, ctx, v, st, { record, time, keep, preset }) {
     if (preset.title) form.title.value = preset.title;
       }
   syncCat();
+  updatePlaceholder();
   ctx.setFoot(`<button type="button" class="btn btn-primary grow" data-save>${icon("check", 18)}保存</button>`);
   $("[data-save]", ctx.foot).onclick = async (e) => {
     const err = $(".form-error", form);
