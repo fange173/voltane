@@ -71,11 +71,11 @@
   gap: 12px;
 }
 .lv-num {
-  width: 96px;
+  width: 112px;
   flex-shrink: 0;
 }
 .lv-num .input {
-  padding-right: 30px;
+  padding-right: 28px;
 }
 .lv-num .unit {
   right: 10px;

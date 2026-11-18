@@ -240,13 +240,26 @@ export function helpTip(text) {
 }
 
 let helpPop = null;
+let helpBtn = null;
+let helpPinned = false;
+let helpHover = false;
 let helpY = 0;
 function hideHelp() {
   helpPop?.remove();
   helpPop = null;
+  helpBtn = null;
+  helpPinned = false;
+  helpHover = false;
 }
-function showHelp(btn) {
+function showHelp(btn, { fromHover = false } = {}) {
+  if (helpPop && helpBtn === btn) {
+    if (!fromHover) helpPinned = true;
+    return;
+  }
   hideHelp();
+  helpBtn = btn;
+  helpHover = fromHover;
+  helpPinned = !fromHover;
   helpPop = document.createElement("div");
   helpPop.className = "help-pop";
   helpPop.textContent = btn.dataset.help;
@@ -266,15 +279,22 @@ document.addEventListener("click", (e) => {
   // 问号可能在链接卡片里，点击只弹说明不跳转
   e.preventDefault();
   e.stopPropagation();
-  if (helpPop && helpPop.textContent === b.dataset.help) hideHelp();
-  else showHelp(b);
+  if (helpPop && helpBtn === b) {
+    if (helpHover && !helpPinned) {
+      helpPinned = true;
+    } else {
+      hideHelp();
+    }
+  } else {
+    showHelp(b, { fromHover: false });
+  }
 }, true);
 document.addEventListener("mouseover", (e) => {
   const b = e.target.closest?.(".help-tip");
-  if (b && matchMedia("(hover: hover)").matches) showHelp(b);
+  if (b && matchMedia("(hover: hover)").matches) showHelp(b, { fromHover: true });
 });
 document.addEventListener("mouseout", (e) => {
-  if (e.target.closest?.(".help-tip") && matchMedia("(hover: hover)").matches) hideHelp();
+  if (e.target.closest?.(".help-tip") && matchMedia("(hover: hover)").matches && !helpPinned) hideHelp();
 });
 // 点按时页面可能轻微抖动，滚动超过一点距离才收起
 window.addEventListener("scroll", (e) => {

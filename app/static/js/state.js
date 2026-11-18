@@ -18,7 +18,7 @@ export const SNAPSHOT_TAGS = {
   before_park: "停车前",
   after_park: "停车后",
   month_start: "月初",
-  other: "其他",
+  other: "日常快照",
   ledger_start: "记账起点",
   delivery: "提车",
 };

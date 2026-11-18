@@ -15,7 +15,7 @@ export function loginPage(onDone, { code = null } = {}) {
       <div class="form-error"></div>
       <button class="btn btn-primary btn-block" type="submit">登 录</button>
     </form>
-    <p class="tiny muted" style="text-align:center">账号由管理员创建；首次部署默认账号 admin / admin123</p>
+    <p class="tiny muted" style="text-align:center">账号由管理员创建，或通过车主分享的邀请链接注册</p>
   </div></div>`);
   const form = $("#login-form");
   form.addEventListener("submit", async (e) => {

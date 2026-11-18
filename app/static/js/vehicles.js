@@ -373,54 +373,64 @@ export async function vehiclePage() {
   const owner = v.role === "owner";
   const editable = (v.role === "owner" || v.role === "editor") && !v.is_archived;
   const cov = health.coverage;
-  el.innerHTML = String(html`<div id="vpage">
+  const hasPreLedger = health.latest_odo != null && health.latest_odo > health.ledger_km + 50;
+  el.innerHTML = String(html`<div id="vpage" class="stack">
     <div class="card vehicle-hero" style="--vc:${v.color}">
-      <div class="row">${vehicleDot(v, 26)}<div class="grow"><h2>${v.name}</h2><div class="muted small">${ENERGY_LABEL[v.energy_type]}${v.plate ? " · " + v.plate : ""}${v.model ? " · " + v.model : ""}</div></div>
+      <div class="row">${vehicleDot(v, 26)}<div class="grow"><h2>${v.name}</h2><div class="muted small">${ENERGY_LABEL[v.energy_type]} · ${ROLE_LABEL[v.role]}${v.plate ? " · " + v.plate : ""}${v.model ? " · " + v.model : ""}</div></div>
         ${editable ? html`<button class="btn btn-sm" id="v-edit">${raw(icon("edit", 16))}参数</button>` : ""}</div>
       <div class="v-params">
         ${health.latest_odo != null ? html`<div><span>当前里程</span><b class="num">${km(health.latest_odo)} km</b></div>` : ""}
         ${v.has_fuel ? html`<div><span>油箱</span><b class="num">${v.tank_capacity_l ? num(v.tank_capacity_l) + " L" : "未填"}</b></div>` : ""}
         ${v.has_elec ? html`<div><span>电池</span><b class="num">${v.battery_usable_kwh ? num(v.battery_usable_kwh) + " kWh" : "未填"}</b></div>` : ""}
-        ${v.has_elec ? html`<div><span>每 1% 电量</span><b class="num">${health.k != null ? fixed(health.k, 3) + " kWh" : "–"}</b></div>` : ""}
-        <div><span>我的角色</span><b>${ROLE_LABEL[v.role]}</b></div>
+        ${v.has_elec ? html`<div><span>每充 1%（含充损）</span><b class="num">${health.k != null ? fixed(health.k, 3) + " kWh" : "–"}</b></div>` : ""}
       </div>
       ${v.is_archived ? html`<div class="callout">${raw(icon("info", 16))}这辆车已归档，只能查看</div>` : ""}
     </div>
 
-    <div class="section-title"><span>数据体检</span><span class="tiny">缺数据只会降低精度，不影响使用</span></div>
-    <div class="card">
-      <div class="coverage">${Object.entries(cov).map(([k, c]) => html`<div class="cov-item"><div class="row between"><span class="small">${k === "fuel" ? "油耗" : "电耗"}精确覆盖</span><b class="num">${c != null ? num(c * 100, 0) + "%" : "–"}</b></div>
-        <div class="progress ${c != null && c > 0.6 ? "ok" : "soon"}"><i style="width:${(c || 0) * 100}%"></i></div></div>`)}
-        <p class="tiny muted">记账以来 ${km(health.ledger_km)} km 里，能算出精确能耗的里程占比</p></div>
-      ${health.issues.length ? html`<div class="issues">${health.issues.map((i) => html`<div class="issue ${i.level}" data-key="${i.key}">
-        <span class="${i.level === "warn" ? "warn-c" : "muted"}">${raw(icon(i.level === "warn" ? "warning" : "info", 18))}</span><span class="grow small">${i.text}</span>
-        <span class="row">${issueAction(i, editable)}<button class="icon-btn" data-dismiss="${i.key}" aria-label="不再提示" style="width:30px;height:30px">${raw(icon("x", 14))}</button></span></div>`)}</div>`
-        : html`<div class="row ok-c small" style="margin-top:10px">${raw(icon("check", 18))}数据很完整</div>`}
-    </div>
+    <div class="vehicle-grid">
+      <div class="stack">
+        <div class="section-title" style="margin-top:4px"><span>数据体检</span><span class="tiny">缺数据只会降低精度，不影响使用</span></div>
+        <div class="card">
+          <div class="coverage">${Object.entries(cov).map(([k, c]) => html`<div class="cov-item"><div class="row between"><span class="small">${k === "fuel" ? "油耗" : "电耗"}精确覆盖</span><b class="num">${c != null ? num(c * 100, 0) + "%" : "–"}</b></div>
+            <div class="progress ${c != null && c > 0.6 ? "ok" : "soon"}"><i style="width:${(c || 0) * 100}%"></i></div></div>`)}
+            <p class="tiny muted">正式建账以来（${km(health.ledger_km)} km）精确能耗覆盖率${hasPreLedger ? "（不含建账前补录里程）" : ""}</p></div>
+          ${health.issues.length ? html`<div class="issues">${health.issues.map((i) => html`<div class="issue ${i.level}" data-key="${i.key}">
+            <span class="${i.level === "warn" ? "warn-c" : "muted"}">${raw(icon(i.level === "warn" ? "warning" : "info", 18))}</span><span class="grow small">${i.text}</span>
+            <span class="row">${issueAction(i, editable)}<button class="icon-btn" data-dismiss="${i.key}" aria-label="不再提示" style="width:30px;height:30px">${raw(icon("x", 14))}</button></span></div>`)}</div>`
+            : html`<div class="row ok-c small" style="margin-top:10px">${raw(icon("check", 18))}数据很完整</div>`}
+        </div>
 
-    <div class="section-title"><span>成员（${members.length}）</span>${owner && !v.is_archived ? html`<button class="link-btn" id="m-add">${raw(icon("plus", 14))} 邀请</button>` : ""}</div>
-    <div class="card flush list" id="members">${members.map((m) => html`<div class="list-item">${avatar(m, "")}<span class="grow">${m.name}${m.is_me ? html` <span class="badge">我</span>` : ""}<div class="tiny muted">@${m.username} · ${fmtDate(parseUTC(m.joined_at))} 加入</div></span>
-      ${owner && !m.is_me ? html`<button class="chip sm" data-role="${m.id}">${m.role_label} ${raw(icon("down", 12))}</button>` : html`<span class="badge">${m.role_label}</span>`}</div>`)}</div>
-    ${owner && invites.length ? html`<div class="card flush list" style="margin-top:10px">${invites.map((i) => html`<div class="list-item"><span class="ico sm brand">${raw(icon("key", 16))}</span>
-      <span class="grow"><b class="num code">${i.code}</b><div class="tiny muted">${inviteMeta(i)}</div></span>
-      ${v.is_archived ? "" : html`<button class="icon-btn" data-copy="${i.code}" aria-label="复制链接">${raw(icon("copy", 18))}</button>`}<button class="icon-btn" data-revoke="${i.id}" aria-label="作废">${raw(icon("trash", 18))}</button></div>`)}</div>` : ""}
+        <div class="section-title"><span>区间汇总补录（没逐条记的油/电）</span>${editable ? html`<button class="link-btn" id="s-add">${raw(icon("plus", 14))} 添加</button>` : ""}</div>
+        ${summaries.length ? html`<div class="card flush list">${summaries.map((s) => html`<button class="list-item" data-sum="${s.id}"><span class="ico sm">${raw(icon("history", 16))}</span>
+          <span class="grow">${s.start_date} 至 ${s.end_date} <span class="badge">${s.mode === "total" ? "填账单总数" : "只填漏记部分"}</span>
+            <div class="tiny muted">${[s.fuel_liters != null && num(s.fuel_liters) + "L", s.fuel_cents != null && "加油 " + money(s.fuel_cents), s.elec_kwh != null && num(s.elec_kwh) + "kWh", s.elec_cents != null && "充电 " + money(s.elec_cents)].filter(Boolean).join(" · ")}
+            ${s.diff?.warnings?.length ? html` · <span class="warn-c">总量小于已记录量</span>` : ""}</div></span>${raw(icon("right", 16))}</button>`)}</div>`
+          : html`<div class="card"><p class="small muted">一条条记不清时，可以按一段时间填合计（如家充桩 App 的月度度数），系统会自动扣掉已经逐条记过的部分。</p></div>`}
+      </div>
 
-    <div class="section-title"><span>历史 / 周期汇总</span>${editable ? html`<button class="link-btn" id="s-add">${raw(icon("plus", 14))} 添加</button>` : ""}</div>
-    ${summaries.length ? html`<div class="card flush list">${summaries.map((s) => html`<button class="list-item" data-sum="${s.id}"><span class="ico sm">${raw(icon("history", 16))}</span>
-      <span class="grow">${s.start_date} 至 ${s.end_date} <span class="badge">${s.mode === "total" ? "按总数" : "补充没记的"}</span>
-        <div class="tiny muted">${[s.fuel_liters != null && num(s.fuel_liters) + "L", s.fuel_cents != null && "加油 " + money(s.fuel_cents), s.elec_kwh != null && num(s.elec_kwh) + "kWh", s.elec_cents != null && "充电 " + money(s.elec_cents)].filter(Boolean).join(" · ")}
-        ${s.diff?.warnings?.length ? html` · <span class="warn-c">总量小于已记录量</span>` : ""}</div></span>${raw(icon("right", 16))}</button>`)}</div>`
-      : html`<div class="card"><p class="small muted">一条条记不清时，可以按一段时间填合计（如家充桩 App 的月度度数），系统会自动扣掉已经逐条记过的部分。</p></div>`}
+      <div class="stack">
+        <div class="section-title" style="margin-top:4px"><span>成员（${members.length}）</span>${owner && !v.is_archived ? html`<button class="link-btn" id="m-add">${raw(icon("plus", 14))} 邀请</button>` : ""}</div>
+        <div class="card flush list" id="members">${members.map((m) => html`<div class="list-item">${avatar(m, "")}<span class="grow">${m.name}${m.is_me ? html` <span class="badge">我</span>` : ""}<div class="tiny muted">@${m.username} · ${fmtDate(parseUTC(m.joined_at))} 加入</div></span>
+          ${owner && !m.is_me ? html`<button class="chip sm" data-role="${m.id}">${m.role_label} ${raw(icon("down", 12))}</button>` : html`<span class="badge">${m.role_label}</span>`}</div>`)}</div>
+        ${owner && invites.length ? html`<div class="card flush list">${invites.map((i) => html`<div class="list-item"><span class="ico sm brand">${raw(icon("key", 16))}</span>
+          <span class="grow"><b class="num code">${i.code}</b><div class="tiny muted">${inviteMeta(i)}</div></span>
+          ${v.is_archived ? "" : html`<button class="icon-btn" data-copy="${i.code}" aria-label="复制链接">${raw(icon("copy", 18))}</button>`}<button class="icon-btn" data-revoke="${i.id}" aria-label="作废">${raw(icon("trash", 18))}</button></div>`)}</div>` : ""}
 
-    <div class="section-title"><span>最近动态</span></div>
-    <div class="card"><div class="activity">${acts.length ? acts.map((a) => html`<div class="act-item">${avatar(a.user, "sm")}<div class="grow"><div class="small">${a.summary}</div><div class="tiny muted">${a.user?.name || ""} · ${ago(a.created_at)}</div></div></div>`) : html`<p class="muted small">暂无</p>`}</div></div>
+        <div class="section-title"><span>最近动态</span></div>
+        <div class="card"><div class="activity">${acts.length ? acts.map((a) => html`<div class="act-item">${avatar(a.user, "sm")}<div class="grow"><div class="small">${a.summary}</div><div class="tiny muted">${a.user?.name || ""} · ${ago(a.created_at)}</div></div></div>`) : html`<p class="muted small">暂无</p>`}</div></div>
 
-    <div class="section-title"><span>更多</span></div>
-    <div class="card flush list">
-      <a class="list-item" data-link href="/vehicles/new">${raw(`<span class="ico sm">${icon("plus", 16)}</span>`)}<span class="grow">添加另一辆车</span>${raw(icon("right", 16))}</a>
-      ${owner ? html`<button class="list-item" id="v-archive">${raw(`<span class="ico sm">${icon("box", 16)}</span>`)}<span class="grow">${v.is_archived ? "取消归档" : "归档（卖掉的车）"}</span></button>` : ""}
-      ${!owner || members.filter((m) => m.role === "owner").length > 1 ? html`<button class="list-item" id="v-leave">${raw(`<span class="ico sm warn">${icon("logout", 16)}</span>`)}<span class="grow">退出这辆车</span></button>` : ""}
-      ${owner ? html`<button class="list-item" id="v-delete">${raw(`<span class="ico sm danger">${icon("trash", 16)}</span>`)}<span class="grow danger-c">删除车辆和全部数据</span></button>` : ""}
+        <div class="section-title"><span>更多</span></div>
+        <div class="card flush list">
+          <a class="list-item" data-link href="/vehicles/new">${raw(`<span class="ico sm">${icon("plus", 16)}</span>`)}<span class="grow">添加另一辆车</span>${raw(icon("right", 16))}</a>
+        </div>
+
+        ${(owner || members.filter((m) => m.role === "owner").length > 1) ? html`<div class="section-title"><span>管理与危险操作</span></div>
+        <div class="card flush list">
+          ${owner ? html`<button class="list-item" id="v-archive">${raw(`<span class="ico sm">${icon("box", 16)}</span>`)}<span class="grow">${v.is_archived ? "取消归档" : "归档（卖掉的车）"}</span></button>` : ""}
+          ${!owner || members.filter((m) => m.role === "owner").length > 1 ? html`<button class="list-item" id="v-leave">${raw(`<span class="ico sm warn">${icon("logout", 16)}</span>`)}<span class="grow">退出这辆车</span></button>` : ""}
+          ${owner ? html`<button class="list-item" id="v-delete">${raw(`<span class="ico sm danger">${icon("trash", 16)}</span>`)}<span class="grow danger-c">删除车辆和全部数据</span></button>` : ""}
+        </div>` : ""}
+      </div>
     </div></div>`);
   bindVehiclePage($("#vpage", el), v, members, summaries, invites);
 }
@@ -650,7 +660,7 @@ function summarySheet(v, s = null) {
         <p class="tiny muted">一段时间内没有逐条记录的补能，按合计填写。只用于花费统计和长期粗略能耗，不影响精确能耗段。</p>
         <div class="grid-2"><div class="field"><label>开始日期</label><input class="input" type="date" name="start_date" value="${s?.start_date || ""}"></div>
           <div class="field"><label>结束日期</label><input class="input" type="date" name="end_date" value="${s?.end_date || todayISO()}"></div></div>
-        <div class="field"><label>填写方式</label><div class="segmented" id="s-mode"><button data-v="extra" class="${!s || s.mode === "extra" ? "on" : ""}">补充没记的部分</button><button data-v="total" class="${s?.mode === "total" ? "on" : ""}">按总数（自动扣除已记录）</button></div></div>
+        <div class="field"><label>填写方式</label><div class="segmented" id="s-mode"><button data-v="extra" class="${!s || s.mode === "extra" ? "on" : ""}">只填漏记部分</button><button data-v="total" class="${s?.mode === "total" ? "on" : ""}">填账单总数（自动扣掉已记）</button></div></div>
         ${v.has_fuel ? html`<div class="grid-3"><div class="field"><label>加油升数</label><input class="input num" name="fuel_liters" inputmode="decimal" value="${s?.fuel_liters ?? ""}"></div>
           <div class="field"><label>加油金额</label><input class="input num" name="fuel_yuan" inputmode="decimal" value="${s?.fuel_cents != null ? s.fuel_cents / 100 : ""}"></div>
           <div class="field"><label>平均油价</label><input class="input num" name="fuel_price" inputmode="decimal" value="${s?.fuel_price ?? ""}" placeholder="只填金额时用"></div></div>` : ""}
@@ -722,10 +732,10 @@ function editVehicle(v) {
             <div class="field"><label>提车里程</label><div class="input-wrap"><input class="input num" name="delivery_odo" inputmode="numeric" value="${v.delivery_date && v.initial_odometer_km != null ? v.initial_odometer_km : ""}" placeholder="新车一般 0–50"><span class="unit">km</span></div></div></div>
         </div></details>
         <details class="more"><summary>${raw(icon("down", 16))}计算设置</summary><div class="stack">
-          <div class="grid-2"><div class="field"><label>最小段里程</label><div class="input-wrap"><input class="input num" name="min_segment_km" value="${c.min_segment_km ?? 30}"><span class="unit">km</span></div><span class="hint">短于这个里程的段合并到下一段</span></div>
+          <div class="grid-2"><div class="field"><label>最短单独计算里程</label><div class="input-wrap"><input class="input num" name="min_segment_km" value="${c.min_segment_km ?? 30}"><span class="unit">km</span></div><span class="hint">间隔短于此里程时自动合并到下一段，减少短途误差</span></div>
             <div class="field"><label>电能折算系数</label><div class="input-wrap"><input class="input num" name="kwh_per_l" value="${c.kwh_per_l ?? 8.9}"><span class="unit">kWh/L</span></div><span class="hint">算等效油耗用</span></div></div>
           ${v.has_fuel ? html`<div class="field"><label>油表读数误差</label><div class="input-wrap"><input class="input num" name="gauge_err_pct" value="${c.gauge_err_pct ?? 5}"><span class="unit">%</span></div><span class="hint">车机能精确到 1% 的可以填 2</span></div>
-            ${switchRow("allow_gauge_anchor", "没有两次加满时用油表读数估算", c.allow_gauge_anchor ?? true)}` : ""}
+            ${switchRow("allow_gauge_anchor", "未加满时允许用油表读数估算油耗", c.allow_gauge_anchor ?? true)}` : ""}
         </div></details>
         <div class="form-error"></div></form>`);
       let color = v.color;

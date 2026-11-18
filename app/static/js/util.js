@@ -193,7 +193,7 @@ export function fmtDate(s, { year = "auto", time = false, week = false } = {}) {
   if (time) out += ` ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   return out;
 }
-export function relDay(s) {
+export function relDay(s, { week = true } = {}) {
   const d = parseLocal(s);
   if (!d) return "";
   const a = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -203,7 +203,7 @@ export function relDay(s) {
   if (diff === 0) return "今天";
   if (diff === 1) return "昨天";
   if (diff === 2) return "前天";
-  return fmtDate(s, { week: true });
+  return fmtDate(s, { week });
 }
 export function ago(iso) {
   const t = new Date(iso).getTime();

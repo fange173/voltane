@@ -259,7 +259,9 @@ def log_activity(db: Session, vehicle_id: Optional[int], user: User, action: str
 def fmt_num(x, digits=2) -> str:
     if x is None:
         return "-"
-    s = f"{x:.{digits}f}"
+    from decimal import Decimal, ROUND_HALF_UP
+    q = Decimal("1" if digits == 0 else "0." + "0" * digits)
+    s = str(Decimal(str(x)).quantize(q, rounding=ROUND_HALF_UP))
     return s.rstrip("0").rstrip(".") if "." in s else s
 
 

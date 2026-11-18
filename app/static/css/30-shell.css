@@ -7,32 +7,33 @@
 }
 .main {
   min-width: 0;
-  padding-bottom: calc(var(--nav-h) + max(12px, calc(var(--safe-b) - 12px)) + 24px);
+  padding-bottom: calc(var(--nav-h) + max(12px, calc(var(--safe-b) - 12px)) + 40px);
 }
 .view {
-  padding: 4px 16px 16px;
+  padding: 8px 16px 16px;
   max-width: 980px;
   margin: 0 auto;
   animation: view-in 0.28s var(--ease);
 }
 
-/* 顶栏 */
+/* 顶栏：在页面顶部时保持透明与背景渐变融为一体，滚动后再浮现毛玻璃与底边线 */
 .topbar {
   position: sticky;
   top: 0;
   z-index: 40;
   height: calc(var(--top-h) + var(--safe-t));
-  padding: var(--safe-t) 10px 0 14px;
+  padding: var(--safe-t) 12px 0 16px;
   display: flex;
   align-items: center;
   gap: 8px;
+  background: transparent;
+  border-bottom: 1px solid transparent;
+  transition: background 0.2s, border-color 0.2s, backdrop-filter 0.2s;
+}
+.topbar.scrolled {
   background: var(--glass);
   backdrop-filter: saturate(1.6) blur(18px);
   -webkit-backdrop-filter: saturate(1.6) blur(18px);
-  border-bottom: 1px solid transparent;
-  transition: border-color 0.2s;
-}
-.topbar.scrolled {
   border-bottom-color: var(--line);
 }
 .topbar .page-title {
@@ -41,6 +42,36 @@
   font-weight: 700;
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.top-back {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  height: 36px;
+  padding: 0 10px 0 4px;
+  border-radius: 12px;
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 15px;
+  margin-left: -4px;
+}
+.top-back:hover {
+  background: var(--surface-3);
+}
+.topbar.subpage .vehicle-pill {
+  display: none;
+}
+.topbar.subpage .top-back {
+  display: inline-flex;
+}
+.topbar.subpage .page-title {
+  display: block;
+}
+.topbar.subpage .top-spacer {
+  display: none;
 }
 .vehicle-pill {
   display: inline-flex;
@@ -52,7 +83,7 @@
   background: var(--surface-1);
   border: 1px solid var(--line);
   box-shadow: var(--shadow-1);
-  max-width: 62vw;
+  max-width: calc(100vw - 84px);
   font-weight: 700;
   font-size: 15px;
 }
@@ -78,6 +109,16 @@
 }
 
 /* 底部导航：悬浮液态玻璃胶囊；Chromium 额外叠 SVG 折射（.glass-svg），其余为模糊 + 高光描边 */
+.bottom-fade {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--nav-h) + var(--safe-b) + 28px);
+  background: linear-gradient(to top, var(--bg) 38%, transparent);
+  pointer-events: none;
+  z-index: 45;
+}
 .bottom-nav {
   --nav-pill: 62px;
   position: fixed;
@@ -185,7 +226,11 @@
     display: grid;
     grid-template-columns: var(--side-w) minmax(0, 1fr);
   }
-  .bottom-nav {
+  .bottom-nav,
+  .bottom-fade {
+    display: none;
+  }
+  .topbar.subpage .top-back {
     display: none;
   }
   .main {
@@ -205,6 +250,9 @@
   .topbar .page-title {
     display: block;
     font-size: 22px;
+  }
+  .topbar .top-spacer {
+    display: none;
   }
   .topbar .vehicle-pill {
     display: none;

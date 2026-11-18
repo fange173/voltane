@@ -37,7 +37,7 @@ import {
   uuid,
 } from "./util.js";
 
-const KIND_TITLE = { fuel: "加油", charge: "充电", snapshot: "状态快照", expense: "记一笔" };
+const KIND_TITLE = { fuel: "加油", charge: "充电", snapshot: "状态快照", expense: "费用" };
 // 自动推算的字段 → 引擎里的估算字段名
 const EST_NAME = {
   fuel_liters: "fuel_l",
@@ -89,7 +89,12 @@ function fuelUnit(v) {
 }
 
 function placeChips(places, kind) {
-  const top = places.slice(0, 6);
+  const filtered = places.filter((p) => {
+    if (kind === "fuel") return p.kind !== "home_charger" && p.kind !== "charge_station";
+    if (kind === "charge") return p.kind !== "gas_station";
+    return true;
+  });
+  const top = filtered.slice(0, 6);
   const geo = window.isSecureContext && "geolocation" in navigator;
   return html`<div class="field" data-f="place"><label>地点
       ${geo ? html`<button type="button" class="link-btn tiny" data-geo style="margin-left:auto">${raw(icon("pin", 14))} 定位</button>` : ""}</label>
@@ -114,10 +119,10 @@ function timeField(value) {
 
 function odoField() {
   return html`<div class="field" data-f="odo"><label>里程<span class="odo-delta muted tiny" style="margin-left:auto"></span></label>
-    <div class="input-wrap"><input class="input num big-input" name="odometer_km" inputmode="numeric" placeholder="仪表盘总里程"><span class="unit">km</span></div>
+    <div class="input-wrap"><input class="input num big-input" name="odometer_km" inputmode="numeric" placeholder="输入仪表盘总里程"><span class="unit">km</span></div>
     <div class="row wrap tiny">
-      <label class="mini-check"><input type="checkbox" name="trip_mode"> 按本次行驶输入</label>
-      <label class="mini-check"><input type="checkbox" name="odo_unknown"> 不确定里程</label>
+      <label class="mini-check"><input type="checkbox" name="trip_mode"> 填本次跑了多少公里（自动累加）</label>
+      <label class="mini-check"><input type="checkbox" name="odo_unknown"> 没看里程表（按前后记录推算）</label>
     </div></div>`;
 }
 
@@ -148,13 +153,14 @@ export async function openRecordForm({ kind = "fuel", record = null, finish = fa
   let ctxRef;
   const st = { kind, prefill: null, place: null, est: new Set(), estSticky: new Set(), lastEdited: [], time: null, record };
 
+  const titleOf = (k) => (k === "expense" ? "记费用" : KIND_TITLE[k]);
   await sheet({
-    title: isEdit ? (finish ? "结束充电" : "编辑" + KIND_TITLE[kind]) : KIND_TITLE[kind],
+    title: isEdit ? (finish ? "结束充电" : "编辑" + KIND_TITLE[kind]) : titleOf(kind),
     render(body, ctx) {
       ctxRef = ctx;
       body.innerHTML = String(html`
         ${!isEdit ? html`<div class="segmented kind-seg" style="margin-bottom:14px">${kinds.map((k) =>
-          html`<button type="button" data-v="${k}" data-tone="${k === "charge" ? "elec" : k === "expense" ? "expense" : k}" class="${k === kind ? "on" : ""}">${raw(icon(k === "fuel" ? "fuel" : k === "charge" ? "bolt" : k === "snapshot" ? "gauge" : "receipt", 16))}${KIND_TITLE[k] === "记一笔" ? "费用" : KIND_TITLE[k] === "状态快照" ? "快照" : KIND_TITLE[k]}</button>`)}</div>` : ""}
+          html`<button type="button" data-v="${k}" data-tone="${k === "charge" ? "elec" : k === "expense" ? "expense" : k}" class="${k === kind ? "on" : ""}">${raw(icon(k === "fuel" ? "fuel" : k === "charge" ? "bolt" : k === "snapshot" ? "gauge" : "receipt", 16))}${k === "snapshot" ? "快照" : KIND_TITLE[k]}</button>`)}</div>` : ""}
         <form class="rec-form stack" autocomplete="off" novalidate></form>`);
       const seg = $(".kind-seg", body);
       if (seg) {
@@ -165,7 +171,7 @@ export async function openRecordForm({ kind = "fuel", record = null, finish = fa
           clearTimeout(st.draftT);
           const keep = snapshotCommon(body, st);
           st.kind = b.dataset.v;
-          ctx.setTitle(KIND_TITLE[st.kind]);
+          ctx.setTitle(titleOf(st.kind));
           renderForm(body, ctx, v, st, { record: null, keep, preset: {} });
         });
       }
@@ -253,7 +259,7 @@ async function renderForm(body, ctx, v, st, { record, finish = false, keep = nul
       ${kind === "charge" ? html`<div class="grid-3">${numField("charge_minutes", "时长", "分钟", { mode: "numeric" })}${numField("energy_fee", "电费", "元", { mode: "text" })}${numField("service_fee", "服务费", "元", { mode: "text" })}</div>
         ${numField("extra_fee", "占位/停车费", "元", { mode: "text", hint: "计入花费，不计入电价" })}` : ""}
       ${kind === "fuel" ? numField("extra_fee", "其他费用（洗车等）", "元", { mode: "text", hint: "计入花费，不计入油价" }) : ""}
-      ${kind !== "snapshot" ? html`<label class="switch"><span class="switch-text"><span>上次${kind === "fuel" ? "加油" : "充电"}没记</span><small>勾选后跨过这里的能耗不计算，避免算错</small></span><input type="checkbox" name="missed_before"><span class="track"></span></label>` : ""}
+      ${kind !== "snapshot" ? html`<label class="switch"><span class="switch-text"><span>这之前有漏记的${kind === "fuel" ? "加油" : "充电"}</span><small>勾选后跳过上一段能耗计算，避免拉高平均值</small></span><input type="checkbox" name="missed_before"><span class="track"></span></label>` : ""}
     </div></details>
     <div class="field"><label>备注</label>
       ${p?.recent_notes?.length ? html`<div class="chips" data-notes>${p.recent_notes.map((n) => html`<button type="button" class="chip sm" data-v="${n}">${n}</button>`)}</div>` : ""}
@@ -952,13 +958,19 @@ function updateOdoDelta(form, st) {
   const { prev, next, soc } = formNeighbors(st, form.occurred_at.value);
   const socInput = form.soc_before_pct;
   if (socInput) {
-    socInput.placeholder = soc == null ? "" : String(soc);
+    socInput.placeholder = soc == null ? "–" : `上次 ${soc}`;
     socInput.title = soc == null ? "" : `上次记录后的电量 ${soc}%`;
+    const rg = $(".lv-range", socInput.closest(".level-field"));
+    if (rg && rg.classList.contains("unset") && socInput.value === "") {
+      const ref = soc ?? 0;
+      rg.value = ref;
+      rg.style.setProperty("--p", ref + "%");
+    }
   }
   const last = prev?.[1];
   const trip = form.trip_mode?.checked;
   const raw = toNum(form.odometer_km.value);
-  form.odometer_km.placeholder = trip ? "本次行驶公里数" : last != null ? "上次 " + km(last) : "仪表盘总里程";
+  form.odometer_km.placeholder = trip ? "输入本次行驶的公里数" : "输入仪表盘总里程";
   el.classList.remove("warn-c");
   if (form.odo_unknown?.checked) {
     el.textContent = "里程按前后记录推算";
@@ -970,7 +982,7 @@ function updateOdoDelta(form, st) {
     return;
   }
   if (raw == null || last == null) {
-    el.textContent = last != null ? `上次 ${km(last)}` : "";
+    el.textContent = last != null ? `上次 ${km(last)} km` : "";
     return;
   }
   const delta = trip ? raw : raw - last;
@@ -1195,17 +1207,28 @@ function renderExpense(form, ctx, v, st, { record, time, keep, preset }) {
         <div class="field"><label>保险止期</label><input class="input" type="date" name="period_end"></div></div>
       <span class="hint tiny muted">保存后会自动更新「保险到期」提醒</span>
     </div>
-    <div class="grid-2"><div class="field"><label>日期</label><input class="input" type="datetime-local" name="occurred_at" value="${time}"></div>
-      ${numField("odometer_km", "里程（可选）", "km", { mode: "numeric" })}</div>
+    ${timeField(time)}
+    ${numField("odometer_km", "里程（可选）", "km", { mode: "numeric", ph: "输入仪表盘总里程" })}
     <div class="grid-2"><div class="field"><label>名称（可选）</label><input class="input" name="title" maxlength="64" placeholder="如：小保养"></div>
       <div class="field"><label>商家（可选）</label><input class="input" name="vendor" maxlength="64" placeholder="如：4S 店"></div></div>
     <div class="field"><label>备注</label><textarea class="input" name="note" rows="2" maxlength="500" placeholder="可不填"></textarea></div>
     <div class="form-error"></div>`);
+  $("[data-time-chips]", form)?.addEventListener("click", (e) => {
+    const c = e.target.closest("[data-t]");
+    if (!c) return;
+    const d = new Date();
+    if (c.dataset.t === "h1") d.setHours(d.getHours() - 1);
+    if (c.dataset.t === "morning") d.setHours(8, 0);
+    if (c.dataset.t === "yesterday") d.setDate(d.getDate() - 1);
+    form.occurred_at.value = localISO(d);
+    $$("[data-t]", form).forEach((x) => x.classList.toggle("on", x === c));
+    updatePlaceholder();
+  });
   let category = cat;
   const insBlock = $(".ins-block", form);
   const updatePlaceholder = () => {
     const last = formNeighbors(st, form.occurred_at.value).prev?.[1];
-    form.odometer_km.placeholder = last == null ? "仪表盘总里程" : "上次 " + km(last);
+    form.odometer_km.placeholder = last == null ? "输入仪表盘总里程" : "上次 " + km(last) + " km";
   };
   form.occurred_at.addEventListener("input", updatePlaceholder);
   form.occurred_at.addEventListener("change", updatePlaceholder);
@@ -1258,8 +1281,9 @@ function renderExpense(form, ctx, v, st, { record, time, keep, preset }) {
       }
   syncCat();
   updatePlaceholder();
-  ctx.setFoot(`<button type="button" class="btn btn-primary grow" data-save>${icon("check", 18)}保存</button>`);
-  $("[data-save]", ctx.foot).onclick = async (e) => {
+  ctx.setFoot(String(html`${!record ? html`<button type="button" class="btn btn-ghost" data-again>保存并再记</button>` : ""}
+    <button type="button" class="btn btn-primary grow" data-save>${raw(icon("check", 18))}保存</button>`));
+  const submitExpense = async (again, btn) => {
     const err = $(".form-error", form);
     const amt = evalAmount(form.amount.value);
     if (amt == null || amt < 0) {
@@ -1275,13 +1299,13 @@ function renderExpense(form, ctx, v, st, { record, time, keep, preset }) {
       amount_cents: Math.round(amt * 100),
       vendor: form.vendor.value.trim(),
       note: form.note.value.trim(),
-            period_start: category === "insurance" ? form.period_start.value || null : null,
+      period_start: category === "insurance" ? form.period_start.value || null : null,
       period_end: category === "insurance" ? form.period_end.value || null : null,
       sub_items: category === "insurance" ? $$("[data-ins]", form).filter((i) => toNum(i.value)).map((i) => ({ name: i.dataset.ins, cents: Math.round(toNum(i.value) * 100) })) : [],
     };
     if (record) body.version = record.version;
     else body.client_id = uuid();
-    setLoading(e.currentTarget, true);
+    setLoading(btn, true);
     try {
       let res;
       try {
@@ -1295,7 +1319,10 @@ function renderExpense(form, ctx, v, st, { record, time, keep, preset }) {
         }
         throw ex;
       }
-      ctx.close(true);
+      if (again) {
+        ctx.close(true);
+        setTimeout(() => openRecordForm({ kind: "expense", vehicle: v }), 220);
+      } else ctx.close(true);
       emit("data-changed");
       if (res.insurance_reminder) toast(`已更新「保险到期」提醒：${res.insurance_reminder.due_date}`);
       else toast(record ? "已保存" : `已记录 ${EXPENSE_LABEL[category]} ${money(body.amount_cents)}`);
@@ -1310,9 +1337,11 @@ function renderExpense(form, ctx, v, st, { record, time, keep, preset }) {
     } catch (ex) {
       err.textContent = ex.message;
     } finally {
-      setLoading(e.currentTarget, false);
+      setLoading(btn, false);
     }
   };
+  $("[data-save]", ctx.foot).onclick = (e) => submitExpense(false, e.currentTarget);
+  $("[data-again]", ctx.foot)?.addEventListener("click", (e) => submitExpense(true, e.currentTarget));
 }
 
 export { durationText, todayISO };

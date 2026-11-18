@@ -29,7 +29,7 @@ export function mePage() {
     <div class="section-title"><span>显示</span></div>
     <div class="card">
       <div class="field"><label>主题</label><div class="segmented" id="theme-seg">${[["auto", "跟随系统"], ["light", "浅色"], ["dark", "深色"]].map(([k, l]) => html`<button data-v="${k}" class="${pref("theme", "auto") === k ? "on" : ""}">${l}</button>`)}</div></div>
-      ${switchRow("place_top", "地点默认选中最常用的", pref("place_default", "none") === "top", "关闭时默认「不记录」")}
+      ${switchRow("place_top", "记账时自动选中最常去的地点", pref("place_default", "none") === "top", "关闭则默认选「不记录地点」")}
       ${switchRow("show_history", "首页显示「提车至今」卡片", !pref("hide_history", false))}
     </div>
 
@@ -197,8 +197,17 @@ export async function placesPage() {
       el.innerHTML = String(emptyState({ ico: "warning", title: "加载失败", text: e.message }));
       return;
     }
+    const norm = (s) => (s || "").replace(/[（]/g, "(").replace(/[）]/g, ")").replace(/\s+/g, "").toLowerCase();
+    const groups = new Map();
+    for (const p of list) {
+      const k = norm(p.name);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(p);
+    }
+    const dupGroup = [...groups.values()].find((g) => g.length > 1) || null;
     el.innerHTML = String(html`<div class="row between toolbar"><p class="muted small grow">记录时可以一键选择；家充桩设置峰谷电价后会自动算金额。</p>
       <button class="btn btn-primary btn-sm" id="pl-add">${raw(icon("plus", 16))}添加</button></div>
+      ${dupGroup ? html`<div class="dup-banner">${raw(icon("warning", 18))}<span class="grow">发现疑似重复地点「${dupGroup[0].name}」（含全角/半角差异）</span><button class="btn btn-sm btn-soft" id="pl-dup-merge">一键合并</button></div>` : ""}
       ${list.length ? html`<div class="card flush list">${list.map((p) => html`<button class="list-item ${p.is_hidden ? "dim" : ""}" data-id="${p.id}">
         <span class="ico sm ${p.kind === "gas_station" ? "fuel" : p.kind === "other" ? "" : "elec"}">${raw(icon(p.kind === "home_charger" ? "home" : p.kind === "gas_station" ? "fuel" : p.kind === "charge_station" ? "bolt" : "pin", 16))}</span>
         <span class="grow">${p.name} ${p.is_hidden ? html`<span class="badge">已隐藏</span>` : ""}${p.shared ? "" : html` <span class="badge">仅自己</span>`}
@@ -207,6 +216,7 @@ export async function placesPage() {
         : emptyState({ ico: "pin", title: "还没有常用地点", text: "记录时输入过两次的地点会提示保存；也可以在这里先添加家里的充电桩" })}`);
     $("#pl-add", el).onclick = () => placeSheet(null, v, load);
     $("#pl-merge", el)?.addEventListener("click", () => mergeSheet(list, load));
+    $("#pl-dup-merge", el)?.addEventListener("click", () => mergeSheet(list, load, dupGroup));
     el.onclick = (e) => {
       const b = e.target.closest("[data-id]");
       if (b) placeSheet(list.find((p) => p.id === +b.dataset.id), v, load);
@@ -273,13 +283,16 @@ function tariffRow(t) {
     <button type="button" class="icon-btn" data-t-del aria-label="删除">${raw(icon("x", 16))}</button></div>`;
 }
 
-function mergeSheet(list, reload) {
+function mergeSheet(list, reload, presetGroup = null) {
+  const sortedPreset = presetGroup ? [...presetGroup].sort((a, b) => (b.use_count || 0) - (a.use_count || 0)) : [];
+  const keepId = sortedPreset[0]?.id;
+  const checkIds = new Set(sortedPreset.slice(1).map((p) => p.id));
   sheet({
     title: "合并地点",
     render(body, ctx) {
       body.innerHTML = String(html`<p class="small muted">勾选要合并的地点，再选保留哪一个；历史记录会改到保留的地点下。</p>
-        <div class="card flush list" style="margin-top:10px">${list.map((p) => html`<label class="list-item"><input type="checkbox" data-m="${p.id}"><span class="grow">${p.name}<div class="tiny muted">用过 ${p.use_count} 次</div></span>
-          <input type="radio" name="keep" value="${p.id}" aria-label="保留"><span class="tiny muted">保留</span></label>`)}</div>`);
+        <div class="card flush list" style="margin-top:10px">${list.map((p) => html`<label class="list-item"><input type="checkbox" data-m="${p.id}" ${checkIds.has(p.id) ? "checked" : ""}><span class="grow">${p.name}<div class="tiny muted">用过 ${p.use_count} 次</div></span>
+          <input type="radio" name="keep" value="${p.id}" aria-label="保留" ${keepId === p.id ? "checked" : ""}><span class="tiny muted">保留</span></label>`)}</div>`);
       ctx.setFoot(`<button class="btn btn-primary grow" data-ok>合并</button>`);
       $("[data-ok]", ctx.foot).onclick = async () => {
         const keep = $("[name=keep]:checked", body)?.value;
@@ -316,10 +329,16 @@ export async function dataPage() {
     </div>
     ${v.role === "owner" ? html`<div class="section-title"><span>导入到「${v.name}」</span></div>
       <div class="card stack"><p class="small muted">支持本应用导出的 JSON。导入的记录会标记「补录」，整批可以撤销。</p>
-        <input type="file" accept=".json,application/json" id="imp-file" class="input">
+        <label class="file-drop" id="imp-drop"><span class="ico sm brand">${raw(icon("upload", 16))}</span><span class="grow" id="imp-label">点击选择备份 JSON 文件</span><input type="file" accept=".json,application/json" id="imp-file"></label>
         <button class="btn btn-primary" id="imp-go">${raw(icon("upload", 18))}导入</button><div class="form-error"></div></div>` : ""}
     <div class="section-title"><span>回收站</span><span class="tiny">保留 30 天</span></div>
     <div id="trash">${skeleton(2, 56)}</div>`);
+  $("#imp-file", el)?.addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    $("#imp-drop", el)?.classList.toggle("has", !!f);
+    const lbl = $("#imp-label", el);
+    if (lbl) lbl.textContent = f ? `${f.name} (${num(f.size / 1024, 1)} KB)` : "点击选择备份 JSON 文件";
+  });
   $("#imp-go", el)?.addEventListener("click", async (e) => {
     const f = $("#imp-file", el).files[0];
     if (!f) return toast("请先选择文件", { error: true });
@@ -379,7 +398,7 @@ export async function adminPage() {
       <div class="kpi-grid">
         <div class="kpi card"><div class="kpi-label">用户</div><div class="kpi-value num">${sys.users}</div></div>
         <div class="kpi card"><div class="kpi-label">车辆</div><div class="kpi-value num">${sys.vehicles}</div></div>
-        <div class="kpi card"><div class="kpi-label">记录</div><div class="kpi-value num">${sys.records}</div></div>
+        <div class="kpi card"><div class="kpi-label">补能与快照</div><div class="kpi-value num">${sys.records}</div></div>
         <div class="kpi card"><div class="kpi-label">数据库</div><div class="kpi-value num">${sys.db_size != null ? num(sys.db_size / 1024 / 1024, 1) : "–"}<small>MB</small></div></div>
       </div>
       <div class="section-title"><span>用户</span><button class="link-btn" id="u-add">${raw(icon("plus", 14))} 新建</button></div>

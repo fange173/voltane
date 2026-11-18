@@ -32,6 +32,7 @@ export function buildShell() {
       <aside class="sidebar" id="sidebar"></aside>
       <div class="main">
         <header class="topbar" id="topbar">
+          <button class="top-back" id="top-back" aria-label="返回">${icon("left", 20)}<span>返回</span></button>
           <button class="vehicle-pill" id="vpill"></button>
           <div class="page-title" id="page-title"></div>
           <div class="top-spacer"></div>
@@ -41,6 +42,7 @@ export function buildShell() {
       </div>
       <aside class="aside" id="aside"></aside>
     </div>
+    <div class="bottom-fade" aria-hidden="true"></div>
     <nav class="bottom-nav" id="bottom-nav">
       <span class="nav-ind" aria-hidden="true"></span>
       ${navItem(NAV[0])}${navItem(NAV[1])}
@@ -48,6 +50,15 @@ export function buildShell() {
       ${navItem(NAV[2])}${navItem(NAV[6])}
     </nav>`;
   $("#vpill").addEventListener("click", openVehicleSwitcher);
+  $("#top-back").addEventListener("click", () => {
+    if (history.length > 1) history.back();
+    else {
+      const p = location.pathname;
+      if (p.startsWith("/stats/")) navigate("/stats/calendar");
+      else if (p.startsWith("/me/") || p === "/admin") navigate("/me");
+      else navigate("/");
+    }
+  });
   $("#bell").addEventListener("click", () => navigate("/reminders"));
   $("#fab").addEventListener("click", () => openQuickAdd());
   window.addEventListener("scroll", () => $("#topbar")?.classList.toggle("scrolled", window.scrollY > 4), { passive: true });
@@ -95,9 +106,11 @@ function renderSidebar() {
 }
 
 export function setNav(key) {
-  $$("[data-nav]").forEach((a) => a.classList.toggle("on", a.dataset.nav === key));
+  $$("#sidebar [data-nav]").forEach((a) => a.classList.toggle("on", a.dataset.nav === key));
+  const bottomKey = key === "calendar" ? "stats" : key;
   const nav = $("#bottom-nav");
   if (!nav) return;
+  $$("[data-nav]", nav).forEach((a) => a.classList.toggle("on", a.dataset.nav === bottomKey));
   const idx = [...nav.children].filter((c) => !c.classList.contains("nav-ind")).findIndex((c) => c.classList.contains("on"));
   if (idx < 0) delete nav.dataset.idx;
   else {
@@ -106,10 +119,14 @@ export function setNav(key) {
   }
 }
 
+const PRIMARY_PATHS = new Set(["/", "/records", "/stats", "/stats/energy", "/stats/cost", "/stats/mileage", "/stats/calendar", "/me"]);
+
 export function setTitle(t) {
   const el = $("#page-title");
   if (el) el.textContent = t || "";
   document.title = t ? `${t} · 油电簿` : "油电簿";
+  const topbar = $("#topbar");
+  if (topbar) topbar.classList.toggle("subpage", !PRIMARY_PATHS.has(location.pathname));
 }
 
 export function setAside(content) {
@@ -205,8 +222,8 @@ export async function openQuickAdd() {
   const tiles = [];
   if (v.has_fuel) tiles.push(["fuel", "fuel", "加油", "满到满算油耗"]);
   if (v.has_elec) tiles.push(["charge", "elec", "充电", "支持分两步记"]);
-  tiles.push(["expense", "expense", "记一笔", "保险、保养、停车…"]);
   tiles.push(["snapshot", "snapshot", "状态快照", "停车前后记一下电量"]);
+  tiles.push(["expense", "expense", "记费用", "保险、保养、停车、洗车…"]);
   sheet({
     title: "记一笔",
     render(body, ctx) {

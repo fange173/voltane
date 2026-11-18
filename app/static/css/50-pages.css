@@ -65,6 +65,27 @@
 .rec-row {
   align-items: center;
 }
+@media (max-width: 480px) {
+  .rec-row {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+  .rec-row > .ico {
+    width: 36px;
+    height: 36px;
+    border-radius: 11px;
+  }
+  .rec-right .row.multi {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+  }
+  .rec-right .badge {
+    font-size: 11px;
+    height: 20px;
+    padding: 0 6px;
+  }
+}
 .rec-title {
   display: flex;
   align-items: center;
@@ -175,6 +196,60 @@
 /* ---------- 图表 ---------- */
 .tabs-seg {
   max-width: 460px;
+}
+.stats-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+#stats-subbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+#stats-subbar > .segmented {
+  flex: 1;
+  width: auto;
+  min-width: 140px;
+}
+#stats-subbar:empty {
+  display: none;
+}
+@media (min-width: 768px) {
+  .stats-toolbar {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .stats-toolbar .tabs-seg {
+    flex: 1;
+    max-width: 440px;
+  }
+  #stats-subbar {
+    flex-shrink: 0;
+  }
+  .stats-toolbar .range-seg {
+    width: auto;
+    max-width: none;
+  }
+  .stats-toolbar .range-seg button {
+    padding: 0 14px;
+  }
+}
+.trend-compact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 6px 2px 2px;
+  font-size: 13px;
+  color: var(--fg-2);
+}
+.trend-compact b {
+  font-size: 18px;
 }
 .chart-card {
   margin-top: 14px;
@@ -329,6 +404,9 @@
   margin-top: 14px;
   grid-template-columns: 1fr;
 }
+.resp-2 > .chart-card {
+  margin-top: 0;
+}
 @media (min-width: 860px) {
   .resp-2 {
     grid-template-columns: 1fr 1fr;
@@ -381,7 +459,7 @@
   padding: 4px 0;
 }
 .cal-cell {
-  aspect-ratio: 1 / 1.08;
+  height: 58px;
   border-radius: 12px;
   display: flex;
   flex-direction: column;
@@ -393,6 +471,11 @@
   background: color-mix(in srgb, var(--brand) calc(var(--heat, 0) * 26%), var(--surface-2));
   transition: transform 0.12s var(--ease), box-shadow 0.15s;
   min-width: 0;
+}
+@media (min-width: 600px) {
+  .cal-cell {
+    height: 64px;
+  }
 }
 .cal-cell.blank {
   background: transparent;
@@ -424,6 +507,7 @@
 }
 .cal-amt {
   font-size: 10px;
+  line-height: 1.2;
   color: var(--fg-muted);
   overflow: hidden;
   max-width: 100%;
@@ -506,7 +590,42 @@
 }
 
 /* ---------- 提醒 ---------- */
-.rem-row .progress {
+.rem-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.rem-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+@media (min-width: 768px) {
+  .rem-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.rem-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  text-align: left;
+  width: 100%;
+  transition: transform 0.12s var(--ease), background 0.12s;
+}
+.rem-card:hover {
+  background: var(--surface-2);
+}
+.rem-card:active {
+  transform: scale(0.99);
+}
+.rem-card .rec-sub {
+  white-space: normal;
+}
+.rem-row .progress,
+.rem-card .progress {
   display: block;
 }
 .rem-hero {
@@ -526,6 +645,17 @@
 }
 
 /* ---------- 车辆 ---------- */
+.vehicle-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+@media (min-width: 1024px) {
+  .vehicle-grid {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
 .vehicle-hero {
   background:
     radial-gradient(500px 200px at 100% 0%, color-mix(in srgb, var(--vc) 18%, transparent), transparent 70%),
@@ -766,6 +896,29 @@
 }
 .list-item.dim {
   opacity: 0.55;
+}
+.year-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.dup-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--warn-soft);
+  color: var(--fg);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.dup-banner svg {
+  color: var(--warn);
+  flex-shrink: 0;
 }
 label.btn input[hidden] {
   display: none;

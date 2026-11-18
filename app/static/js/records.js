@@ -30,7 +30,8 @@ export function itemTitle(it) {
   const parts = [];
   if (it.soc_before_pct != null) parts.push(`电 ${num(it.soc_before_pct, 0)}%`);
   if (it.fuel_level_before_pct != null) parts.push(`油 ${fuelLevelText(it.fuel_level_before_pct, state.vehicles.find((x) => x.id === it.vehicle_id))}`);
-  return `${SNAPSHOT_TAGS[it.snapshot_tag] || "快照"}${parts.length ? " · " + parts.join(" ") : ""}`;
+  const tagText = it.snapshot_tag === "other" || !it.snapshot_tag ? "状态快照" : (SNAPSHOT_TAGS[it.snapshot_tag] || "状态快照");
+  return `${tagText}${parts.length ? " · " + parts.join(" ") : ""}`;
 }
 
 export function itemIcon(it) {
@@ -41,8 +42,11 @@ export function itemIcon(it) {
 }
 
 function badgeHtml(b) {
-  const unit = b.energy === "elec" ? "kWh" : b.energy === "combined" ? "L 折合" : "L";
-  if (b.kind === "idle" && b.per_day != null) return html`<span class="badge ${b.anomaly ? "warn" : ""}" title="静置耗电">${b.anomaly ? raw("●") : ""}${num(b.per_day)} kWh/天</span>`;
+  const unit = b.energy === "elec" ? "kWh/百km" : b.energy === "combined" ? "L/百km 折合" : "L/百km";
+  if (b.kind === "idle" && b.per_day != null) {
+    if (b.per_day < 0.05 && !b.anomaly) return "";
+    return html`<span class="badge ${b.anomaly ? "warn" : ""}" title="静置耗电">${b.anomaly ? raw("●") : ""}${num(b.per_day)} kWh/天</span>`;
+  }
   if (b.per100 == null) return "";
   const cls = b.anomaly ? "warn" : b.energy === "fuel" ? "fuel" : "elec";
   return html`<span class="badge ${cls}">${b.anomaly ? raw("●") : ""}${num(b.per100)} ${unit}${b.quality !== "A" ? "·估" : ""}</span>`;
@@ -55,7 +59,7 @@ function shared(vid) {
 
 export function itemRow(it, { showDate = true } = {}) {
   const sub = [];
-  if (showDate) sub.push(relDay(it.occurred_at) + " " + it.occurred_at.slice(11, 16));
+  if (showDate) sub.push(relDay(it.occurred_at, { week: false }) + " " + it.occurred_at.slice(11, 16));
   else sub.push(it.occurred_at.slice(11, 16));
   if (it.odometer_km != null && !it.odometer_estimated) sub.push(km(it.odometer_km) + " km");
   else if (it.type === "record" && it.odometer_estimated) sub.push("里程估算");
@@ -67,12 +71,13 @@ export function itemRow(it, { showDate = true } = {}) {
   if (it.source === "backfill" || it.source === "import") tags.push(raw(`<span class="src-ico" title="补录" aria-label="补录">${icon("history", 13)}</span>`));
   if (it.source === "auto_fix") tags.push(html`<span class="badge warn">自动补</span>`);
   if (it.pending) tags.push(html`<span class="badge warn">待同步</span>`);
+  const badges = (it.badges || []).map(badgeHtml).filter(Boolean);
   return html`<button class="list-item rec-row ${it.pending ? "pending" : ""}" data-type="${it.type}" data-id="${it.id ?? ""}">
     ${itemIcon(it)}
     <span class="grow"><span class="rec-title"><span class="t">${itemTitle(it)}</span> ${tags}</span>
       <span class="rec-sub">${sub.join(" · ")}</span></span>
     <span class="rec-right">${cents != null ? html`<b class="num">${money(cents)}</b>` : it.kind === "snapshot" ? "" : html`<b class="faint">–</b>`}
-      <span class="row" style="gap:4px;justify-content:flex-end">${(it.badges || []).map(badgeHtml)}${shared(it.vehicle_id) ? avatar(it.created_by, "sm") : ""}</span></span>
+      <span class="row ${badges.length > 1 ? "multi" : ""}" style="gap:4px;justify-content:flex-end">${badges}${shared(it.vehicle_id) ? avatar(it.created_by, "sm") : ""}</span></span>
   </button>`;
 }
 
@@ -314,10 +319,14 @@ function detailHtml(d, v) {
     <div class="card" style="margin-top:12px">${kv.map(([k, val]) => html`<div class="kv"><span>${k}</span><span>${val}</span></div>`)}</div>`;
 }
 
-/** 综合段和同区间的油段重复时只显示综合段。 */
+/** 综合段和同区间的油段重复时只显示综合段，并过滤掉无意义的 0 耗电静置段。 */
 function dedupeSegments(segs) {
   const comb = segs.filter((s) => s.energy === "combined");
-  return segs.filter((s) => !(s.energy === "fuel" && comb.some((c) => c.start_id === s.start_id && c.end_id === s.end_id)));
+  return segs.filter((s) => {
+    if (s.energy === "fuel" && comb.some((c) => c.start_id === s.start_id && c.end_id === s.end_id)) return false;
+    if (s.kind === "idle" && s.status === "ok" && (s.idle_amount ?? s.amount ?? 0) <= 0.05 && !s.anomaly) return false;
+    return true;
+  });
 }
 
 function fmtVal(x, unit) {
@@ -354,6 +363,7 @@ function segmentCard(s, d, v) {
       ${s.elec_share != null ? html`<span>电能占比 ${num(s.elec_share * 100, 0)}%</span>` : ""}</div>` : ""}
     ${parts.length ? html`<div class="formula">${formula}${s.kind === "idle" ? "" : html`<div>÷ ${km(s.distance)} km × 100</div>`}</div>` : ""}
     ${canMark ? html`<div class="seg-marks" data-energy="${s.energy}" data-start="${s.start_id}" data-end="${s.end_id}">
+      <span class="tiny muted">标记这段的用车场景</span>
       <div class="chips wrap">${Object.entries(SEGMENT_TAGS).map(([k, l]) => html`<button class="chip sm ${s.tag === k ? "on" : ""}" data-tag="${k}">${l}</button>`)}</div>
       <label class="mini-check" ${pureIdle ? "hidden" : ""}><input type="checkbox" data-excl ${s.excluded ? "checked" : ""}> <span data-excl-text>${exclText(s.tag)}</span></label></div>` : ""}
   </div>`;
@@ -362,7 +372,7 @@ function segmentCard(s, d, v) {
 const IDLE_HELP = "停着时掉的电（哨兵、空调、自放电）。标成「哨兵/静置」但这段有行驶里程时，按你平时的行驶电耗估出行驶部分，剩下的才算静置。";
 
 function exclText(tag) {
-  return tag === "idle" ? "行驶部分也不计入行驶能耗（仍计入综合能耗）" : "不计入行驶能耗（仍计入综合能耗和花费）";
+  return tag === "idle" ? "行驶部分也不计入「平时行驶能耗」均值（仍计入总能耗与花费）" : "不计入「平时行驶能耗」均值（仍计入总能耗与花费）";
 }
 
 function bindSegmentMarks(body, d, v) {

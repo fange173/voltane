@@ -9,6 +9,8 @@
   --surface-1: #ffffff;
   --surface-2: #f6f7fb;
   --surface-3: #eceef5;
+  --seg-track: #dfe3ef;
+  --seg-thumb: #ffffff;
   --glass: rgba(255, 255, 255, 0.82);
   --glass-float: rgba(255, 255, 255, 0.5);
   --glass-edge: rgba(255, 255, 255, 0.7);
@@ -77,6 +79,8 @@
     --surface-1: #151824;
     --surface-2: #1b1f2e;
     --surface-3: #242a3b;
+    --seg-track: #0d0f17;
+    --seg-thumb: #272d40;
     --glass: rgba(21, 24, 36, 0.82);
     --glass-float: rgba(30, 34, 52, 0.62);
     --glass-edge: rgba(255, 255, 255, 0.16);
@@ -125,6 +129,8 @@
   --surface-1: #151824;
   --surface-2: #1b1f2e;
   --surface-3: #242a3b;
+  --seg-track: #0d0f17;
+  --seg-thumb: #272d40;
   --glass: rgba(21, 24, 36, 0.82);
   --glass-float: rgba(30, 34, 52, 0.62);
   --glass-edge: rgba(255, 255, 255, 0.16);

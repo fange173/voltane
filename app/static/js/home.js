@@ -138,8 +138,8 @@ function quickRow(v) {
   const b = [];
   if (v.has_fuel) b.push(html`<button class="quick fuel" data-quick="fuel">${raw(icon("fuel", 20))}<span>加油</span></button>`);
   if (v.has_elec) b.push(html`<button class="quick elec" data-quick="charge">${raw(icon("bolt", 20))}<span>充电</span></button>`);
-  b.push(html`<button class="quick expense" data-quick="expense">${raw(icon("receipt", 20))}<span>记一笔</span></button>`);
   b.push(html`<button class="quick snapshot" data-quick="snapshot">${raw(icon("gauge", 20))}<span>快照</span></button>`);
+  b.push(html`<button class="quick expense" data-quick="expense">${raw(icon("receipt", 20))}<span>记费用</span></button>`);
   return html`<div class="quick-row">${b}</div>`;
 }
 
@@ -147,8 +147,9 @@ function quickRow(v) {
 
 function bigNum(value, unit, tone, q, err) {
   const ico = { fuel: "fuel", elec: "bolt", combined: "gauge" }[tone];
+  const sub = tone === "combined" ? "折合<br>" + unit : unit + "<br>/100km";
   return html`<div class="big ${tone}"><span class="big-ico">${raw(icon(ico, 18))}</span>
-    <span class="big-val num">${value != null ? num(value) : "–"}</span><span class="big-unit">${unit}<br>/100km</span>${qTag(q, err)}</div>`;
+    <span class="big-val num">${value != null ? num(value) : "–"}</span><span class="big-unit">${raw(sub)}</span>${qTag(q, err)}</div>`;
 }
 
 function scopeText(x) {
@@ -176,16 +177,16 @@ function heroCard(v, d) {
     if (c && c.per100 != null) {
       // 油电同一区间，主数字是折合油耗
       const range = c.low100 != null ? ` (${num(c.low100)}–${num(c.high100)})` : "";
-      body = html`<div class="big-pair">${bigNum(c.equiv_per100, "L 折合", "combined", c.quality)}
-        <div class="big-side"><div><span class="muted tiny">油</span><b class="num fuel-c">${num(c.per100)}<small>L${range}</small></b></div>
-          <div><span class="muted tiny">电</span><b class="num elec-c">${c.elec_per100 != null ? num(c.elec_per100) : "–"}<small>kWh</small></b></div></div></div>`;
+      body = html`<div class="big-pair">${bigNum(c.equiv_per100, "L/100km", "combined", c.quality)}
+        <div class="big-side"><div><span class="muted tiny">油</span><b class="num fuel-c">${num(c.per100)}<small>L/100km${range}</small></b></div>
+          <div><span class="muted tiny">电</span><b class="num elec-c">${c.elec_per100 != null ? num(c.elec_per100) : "–"}<small>kWh/100km</small></b></div></div></div>`;
       foot = [
         c.cost_per_km != null && html`<span><b class="num">¥${fixed(c.cost_per_km)}</b>/km</span>`,
         c.elec_share != null && html`<span>电能 <b class="num">${num(c.elec_share * 100, 0)}%</b></span>`,
-        html`<span class="tiny muted">同一区间 ${km(c.distance)} km${helpTip(HELP_EQUIV)}</span>`,
+        html`<span class="tiny muted">区间里程 ${km(c.distance)} km${helpTip(HELP_EQUIV)}</span>`,
       ];
       d._scope = c.scope === "segment"
-        ? `${c.anchor === "full" ? "满到满" : "油表读数之间"} · ${fmtDate(c.end_ts)}`
+        ? `${c.start_ts ? fmtDate(c.start_ts) + " → " : ""}${fmtDate(c.end_ts)} · ${c.anchor === "full" ? "满到满精算" : "按油表估算"}`
         : `粗略 · ${c.scope === "delivery" ? "提车至今" : "记账以来"}`;
       const f = L.fuel;
       if (c.quality === "C" && f?.hint) {
@@ -212,8 +213,8 @@ function heroCard(v, d) {
     const e = L.elec;
     const t = L.elec_totals;
     body = html`<div class="big-pair">${bigNum(e.per100, "kWh", "elec", e.quality, e.err100)}
-      ${t?.overall ? html`<div class="big-side"><div><span class="muted tiny">本期行驶</span><b class="num">${t.drive ? num(t.drive.per100) : "–"}</b></div>
-        <div><span class="muted tiny">含静置</span><b class="num">${num(t.overall.per100)}</b></div>
+      ${t?.overall ? html`<div class="big-side"><div><span class="muted tiny">本期行驶</span><b class="num">${t.drive ? num(t.drive.per100) : "–"}<small>kWh/100km</small></b></div>
+        <div><span class="muted tiny">含静置</span><b class="num">${num(t.overall.per100)}<small>kWh/100km</small></b></div>
         ${t.idle ? html`<div><span class="muted tiny">静置</span><b class="num">${num(t.idle.amount, 1)}<small>kWh</small></b></div>` : ""}</div>` : ""}</div>`;
     foot = [scopeText(e) && html`<span class="tiny">${scopeText(e)}</span>`, e.cost_per_km != null && html`<span><b class="num">¥${fixed(e.cost_per_km)}</b>/km</span>`];
     if (e.quality === "D") {
@@ -296,19 +297,19 @@ function remindersCard(list) {
 function historyCard(v, h) {
   if (!h || pref("hide_history", false) || h.days < 30) return "";
   const rows = [];
-  if (h.fuel) rows.push(html`<div><span class="muted tiny">油耗</span><b class="num fuel-c">${num(h.fuel.per100)}</b><small>L${h.fuel.low100 != null ? ` (${num(h.fuel.low100)}–${num(h.fuel.high100)})` : ""}</small></div>`);
-  if (h.elec) rows.push(html`<div><span class="muted tiny">电耗</span><b class="num elec-c">${num(h.elec.per100)}</b><small>kWh</small></div>`);
+  if (h.fuel) rows.push(html`<div><span class="muted tiny">平均油耗</span><b class="num fuel-c">${num(h.fuel.per100)}</b><small>L/100km${h.fuel.low100 != null ? ` (${num(h.fuel.low100)}–${num(h.fuel.high100)})` : ""}</small></div>`);
+  if (h.elec) rows.push(html`<div><span class="muted tiny">平均电耗</span><b class="num elec-c">${num(h.elec.per100)}</b><small>kWh/100km</small></div>`);
   return html`<div class="card history" id="history-card">
     <div class="card-head"><span class="card-title">${raw(icon("history", 18))}${h.scope === "delivery" ? "提车至今" : "记账以来"}</span>
       <span class="row">${h.has_summary ? html`<span class="badge">含历史汇总</span>` : ""}<button class="icon-btn" id="history-hide" aria-label="隐藏" style="width:28px;height:28px">${raw(icon("x", 14))}</button></span></div>
     <div class="history-grid">
-      <div><span class="muted tiny">${h.days} 天</span><b class="num">${km(h.mileage)}</b><small>km</small></div>
+      <div class="span-2"><span class="muted tiny">累计里程（${h.days} 天）</span><b class="num">${km(h.mileage)} <small>km</small></b></div>
       <div><span class="muted tiny">总花费</span><b class="num">${money(h.total_cents, { digits: 0 })}</b></div>
-      ${rows}
       <div><span class="muted tiny">每公里总成本</span><b class="num">${h.total_cost_per_km != null ? "¥" + fixed(h.total_cost_per_km) : "–"}</b></div>
+      ${rows}
     </div>
     ${h.summary_before_cents ? html`<p class="tiny muted">另有记账前的历史汇总 ${money(h.summary_before_cents, { digits: 0 })}，那段里程未知，没有计入每公里成本</p>` : ""}
-    ${h.fuel || h.elec ? html`<p class="tiny muted">粗略口径：按长期补能总量估算，仅供参考</p>` : ""}
+    ${h.fuel || h.elec ? html`<p class="tiny muted">按${h.scope === "delivery" ? "提车" : "记账"}以来的${v.has_fuel && v.has_elec ? "加油、充电" : v.has_fuel ? "加油" : "充电"}总量粗略折算，仅供参考</p>` : ""}
   </div>`;
 }
 

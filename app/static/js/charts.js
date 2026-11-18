@@ -7,7 +7,8 @@ function niceMax(v) {
   if (!(v > 0)) return 1;
   const e = Math.pow(10, Math.floor(Math.log10(v)));
   const f = v / e;
-  const n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
+  const steps = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 7.5, 8, 10];
+  const n = steps.find((s) => f <= s) ?? 10;
   return n * e;
 }
 function niceRange(lo, hi) {
@@ -105,9 +106,15 @@ function attachTooltip(el, svg, { count, xAt, content, guide = true, h, top }) {
 }
 
 function yAxis(ticks, y, w, padL, fmt) {
+  const seen = new Set();
   return ticks
-    .map((t) => `<g><line x1="${padL}" x2="${w}" y1="${y(t)}" y2="${y(t)}" class="grid"/>
-      <text x="${padL - 6}" y="${y(t) + 4}" class="axis" text-anchor="end">${esc(fmt(t))}</text></g>`)
+    .map((t) => {
+      const txt = String(fmt(t));
+      const show = !seen.has(txt);
+      seen.add(txt);
+      return `<g><line x1="${padL}" x2="${w}" y1="${y(t)}" y2="${y(t)}" class="grid"/>
+      ${show ? `<text x="${padL - 6}" y="${y(t) + 4}" class="axis" text-anchor="end">${esc(txt)}</text>` : ""}</g>`;
+    })
     .join("");
 }
 
@@ -141,9 +148,12 @@ export function lineChart(el, { labels, series, height = 200, unit = "", fmt = f
     const ticks = ticksOf(lo, hi);
     const step = Math.max(1, Math.ceil(n / Math.floor((w - padL) / 64)));
     let s = `<svg width="${w}" height="${h}" class="chart-svg">${yAxis(ticks, y, w - padR, padL, fmt)}`;
+    let lastLbl = null;
     labels.forEach((l, i) => {
       if (i % step === 0 || i === n - 1) {
         if (i !== n - 1 && n - 1 - i < step * 0.6) return;
+        if (l === lastLbl) return;
+        lastLbl = l;
         s += `<text x="${xAt(i)}" y="${h - 6}" class="axis" text-anchor="middle">${esc(l)}</text>`;
       }
     });
@@ -200,7 +210,7 @@ export function lineChart(el, { labels, series, height = 200, unit = "", fmt = f
  * 柱状图（可堆叠）。series: [{name, color, values, pattern?}]。
  * 用于月度花费、月度里程、月度能耗。
  */
-export function barChart(el, { labels, series, height = 200, stacked = false, unit = "", fmt = fmtTick, tipFmt, line } = {}) {
+export function barChart(el, { labels, series, height = 200, stacked = false, unit = "", fmt = fmtTick, tipFmt, tipLabel, line } = {}) {
   const render = () => {
     el.innerHTML = "";
     const { w, h } = setup(el, height);
@@ -213,16 +223,20 @@ export function barChart(el, { labels, series, height = 200, stacked = false, un
       el.innerHTML = `<div class="chart-empty">暂无数据</div>`;
       return;
     }
-    const padL = 40;
-    const padR = 8;
+    const ticks = ticksOf(0, max);
+    const maxTickLen = Math.max(...ticks.map((t) => String(fmt(t)).length));
+    const padL = maxTickLen <= 2 ? 26 : maxTickLen <= 3 ? 32 : 40;
+    const padR = 10;
     const padT = 12;
     const padB = 24;
     const bw = (w - padL - padR) / n;
     const xAt = (i) => padL + bw * i + bw / 2;
     const y = (v) => padT + (1 - v / max) * (h - padT - padB);
     const barW = Math.max(Math.min(bw * (stacked || series.length === 1 ? 0.56 : 0.8), 34), 3);
-    let s = `<svg width="${w}" height="${h}" class="chart-svg">${yAxis(ticksOf(0, max), y, w - padR, padL, fmt)}`;
-    const step = Math.max(1, Math.ceil(n / Math.floor((w - padL) / 44)));
+    let s = `<svg width="${w}" height="${h}" class="chart-svg">${yAxis(ticks, y, w - padR, padL, fmt)}`;
+    const maxLblLen = Math.max(...labels.map((l) => String(l).length));
+    const minCellW = maxLblLen <= 3 ? 26 : 44;
+    const step = Math.max(1, Math.ceil(n / Math.floor((w - padL) / minCellW)));
     labels.forEach((l, i) => {
       if (i % step === 0) s += `<text x="${xAt(i)}" y="${h - 6}" class="axis" text-anchor="middle">${esc(l)}</text>`;
     });
@@ -236,7 +250,9 @@ export function barChart(el, { labels, series, height = 200, stacked = false, un
           const y0 = y(acc + v);
           const bh = y(acc) - y0;
           const top = series.slice(si + 1).every((x) => !(x.values[i] > 0));
-          s += `<rect x="${xAt(i) - barW / 2}" y="${y0}" width="${barW}" height="${Math.max(bh - (top ? 0 : 1), 0.5)}" rx="${top ? 5 : 0}" fill="${css(ser.color)}" ${ser.pattern ? 'fill-opacity=".45"' : ""}/>`;
+          const minH = Math.max(bh - (top ? 0 : 1), 3);
+          const ry = top && bh < 3 ? y(acc) - minH : y0;
+          s += `<rect x="${xAt(i) - barW / 2}" y="${ry}" width="${barW}" height="${minH}" rx="${top ? 5 : 0}" fill="${css(ser.color)}" ${ser.pattern ? 'fill-opacity=".45"' : ""}/>`;
           if (top && bh > 5) s += `<rect x="${xAt(i) - barW / 2}" y="${y0 + 4}" width="${barW}" height="${Math.max(bh - 4, 0)}" fill="${css(ser.color)}" ${ser.pattern ? 'fill-opacity=".45"' : ""}/>`;
           acc += v;
         });
@@ -247,7 +263,9 @@ export function barChart(el, { labels, series, height = 200, stacked = false, un
           const v = ser.values[i];
           if (!(v > 0)) return;
           const x = xAt(i) - barW / 2 + sw * si;
-          s += `<rect x="${x + 1}" y="${y(v)}" width="${Math.max(sw - 2, 2)}" height="${y(0) - y(v)}" rx="4" fill="${css(ser.color)}"/>`;
+          const bh = Math.max(y(0) - y(v), 3);
+          const ry = y(0) - bh;
+          s += `<rect x="${x + 1}" y="${ry}" width="${Math.max(sw - 2, 2)}" height="${bh}" rx="4" fill="${css(ser.color)}"/>`;
         });
       }
       s += `</g>`;
@@ -276,7 +294,7 @@ export function barChart(el, { labels, series, height = 200, stacked = false, un
           .map((ser) => `<div><i style="background:${css(ser.color)}"></i>${esc(ser.name)} <b>${esc((tipFmt || fmt)(ser.values[i]))}${esc(unit)}</b></div>`);
         if (line && line.values[i] != null) rows.push(`<div><i style="background:${css(line.color)}"></i>${esc(line.name)} <b>${esc((tipFmt || fmt)(line.values[i]))}</b></div>`);
         if (stacked && rows.length > 1) rows.push(`<div class="tip-total">合计 <b>${esc((tipFmt || fmt)(totals[i]))}${esc(unit)}</b></div>`);
-        return rows.length ? `<div class="tip-h">${esc(labels[i])}</div>${rows.join("")}` : "";
+        return rows.length ? `<div class="tip-h">${esc(tipLabel ? tipLabel(i) : labels[i])}</div>${rows.join("")}` : "";
       },
     });
   };

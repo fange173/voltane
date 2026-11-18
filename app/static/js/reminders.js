@@ -19,14 +19,25 @@ function dueText(r) {
   return parts.join(" · ") || "未设置到期";
 }
 
-export function reminderRow(r, { compact = false } = {}) {
+function effectiveProgress(r) {
+  const rawProg = Math.max(r.date_progress ?? -1, r.km_progress ?? -1);
+  if (rawProg >= 0) return rawProg;
+  if (r.days_left != null && r.status !== "inactive") {
+    const total = (r.interval_months || 12) * 30.4375;
+    return Math.max(0.04, Math.min(1, 1 - r.days_left / total));
+  }
+  return null;
+}
+
+export function reminderRow(r, { compact = false, card = false } = {}) {
   const [label, tone] = STATUS[r.status];
-  const prog = Math.max(r.date_progress ?? 0, r.km_progress ?? 0);
-  return html`<button class="list-item rem-row" data-rem="${r.id}">
+  const prog = effectiveProgress(r);
+  const cls = card ? "card rem-card" : "list-item rem-row";
+  return html`<button class="${cls}" data-rem="${r.id}">
     <span class="ico ${tone === "danger" ? "danger" : tone === "warn" ? "warn" : "brand"}">${raw(icon(TPL_ICON[r.template_key] || "bell", 20))}</span>
     <span class="grow"><span class="rec-title">${r.title}${r.personal ? html` <span class="badge">个人</span>` : ""}${!compact && r.vehicle_name && state.vehicles.length > 1 ? html` <span class="badge">${r.vehicle_name}</span>` : ""}${r.muted ? html` <span class="badge">已静音</span>` : ""}</span>
-      <span class="rec-sub">${dueText(r)}${r.due_date && r.days_left != null && !compact ? ` · ${r.due_date}` : ""}</span>
-      ${!compact && (r.date_progress != null || r.km_progress != null) ? html`<span class="progress ${r.status}" style="margin-top:6px"><i style="width:${Math.min(prog, 1) * 100}%"></i></span>` : ""}</span>
+      <span class="rec-sub">${dueText(r)}${r.due_date && r.days_left != null && !compact ? html` · <span style="white-space:nowrap">${r.due_date}</span>` : ""}</span>
+      ${!compact && prog != null ? html`<span class="progress ${r.status}" style="margin-top:8px"><i style="width:${Math.min(prog, 1) * 100}%"></i></span>` : ""}</span>
     ${tone ? html`<span class="badge ${tone}">${label}</span>` : html`<span class="badge">${label}</span>`}</button>`;
 }
 
@@ -63,9 +74,20 @@ export async function remindersPage() {
       return;
     }
     const groups = [["overdue", "已过期"], ["soon", "即将到期"], ["ok", "正常"], ["inactive", "已停用"]];
-    box.innerHTML = String(html`${groups.map(([k, l]) => {
+    const active = list.filter((r) => r.status !== "inactive");
+    const urgent = active.filter((r) => r.status === "overdue" || r.status === "soon").length;
+    const nextItem = active.slice().sort((a, b) => (a.days_left ?? 99999) - (b.days_left ?? 99999))[0];
+    box.innerHTML = String(html`
+      <div class="card rem-summary">
+        <span class="ico ${urgent ? "warn" : "brand"}">${raw(icon("bell", 20))}</span>
+        <div class="grow">
+          <b>${urgent ? `有 ${urgent} 项需要关注` : `共 ${active.length} 项提醒 · 全部正常`}</b>
+          <div class="tiny muted">${nextItem ? `最近一项：${nextItem.title}（${dueText(nextItem)}）` : "暂无生效中的提醒"}</div>
+        </div>
+      </div>
+      ${groups.map(([k, l]) => {
       const arr = list.filter((r) => r.status === k);
-      return arr.length ? html`<div class="section-title"><span>${l}</span><span>${arr.length}</span></div><div class="card flush list">${arr.map((r) => reminderRow(r))}</div>` : "";
+      return arr.length ? html`<div class="section-title"><span>${l}</span><span>${arr.length}</span></div><div class="rem-grid">${arr.map((r) => reminderRow(r, { card: true }))}</div>` : "";
     })}`);
     box.onclick = (e) => {
       const b = e.target.closest("[data-rem]");
