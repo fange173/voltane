@@ -108,14 +108,14 @@
   flex: 1;
 }
 
-/* 底部导航：悬浮液态玻璃胶囊；Chromium 额外叠 SVG 折射（.glass-svg），其余为模糊 + 高光描边 */
+/* 底部导航：高质感悬浮磨砂胶囊 */
 .bottom-fade {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
-  height: calc(var(--nav-h) + var(--safe-b) + 28px);
-  background: linear-gradient(to top, var(--bg) 38%, transparent);
+  height: calc(var(--nav-h) + var(--safe-b) + 20px);
+  background: linear-gradient(to top, var(--bg) 16%, transparent);
   pointer-events: none;
   z-index: 45;
 }
@@ -124,10 +124,10 @@
   position: fixed;
   left: 14px;
   right: 14px;
-  bottom: max(12px, calc(var(--safe-b) - 12px));
+  bottom: max(12px, calc(var(--safe-b) - 8px));
   z-index: 50;
   height: var(--nav-pill);
-  max-width: 460px;
+  max-width: 440px;
   margin: 0 auto;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -135,10 +135,14 @@
   padding: 0 5px;
   border-radius: 31px;
   background: var(--glass-float);
-  backdrop-filter: saturate(1.8) blur(14px);
-  -webkit-backdrop-filter: saturate(1.8) blur(14px);
+  backdrop-filter: saturate(1.8) blur(20px);
+  -webkit-backdrop-filter: saturate(1.8) blur(20px);
   border: 1px solid var(--glass-edge);
   box-shadow: inset 0 1px 0 var(--glass-hi), var(--glass-shadow);
+  transform: translateZ(0);
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
 }
 /* 不支持毛玻璃或开启了「降低透明度」时改用不透明底色，保证文字对比度 */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
@@ -147,16 +151,11 @@
   }
 }
 @media (prefers-reduced-transparency: reduce) {
-  .bottom-nav,
-  .bottom-nav.glass-svg {
+  .bottom-nav {
     background: var(--surface-1);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
-}
-.bottom-nav.glass-svg {
-  background: var(--glass-float);
-  backdrop-filter: url(#glass-refract) saturate(1.8) blur(5px);
 }
 .nav-ind {
   position: absolute;
@@ -164,13 +163,13 @@
   bottom: 5px;
   left: 5px;
   width: calc((100% - 10px) / 5);
-  border-radius: 25px;
+  border-radius: 26px;
   background: var(--glass-ind);
-  box-shadow: inset 0 1px 0 var(--glass-edge);
   pointer-events: none;
   opacity: 0;
   transform: translateX(calc(var(--nav-idx, 0) * 100%));
-  transition: transform 0.38s var(--ease), opacity 0.2s;
+  transition: transform 0.24s var(--ease), opacity 0.16s;
+  will-change: transform;
 }
 .bottom-nav[data-idx] .nav-ind {
   opacity: 1;
@@ -186,26 +185,34 @@
   color: var(--fg-muted);
   height: 100%;
   justify-content: center;
-  transition: color 0.15s;
+  border-radius: 26px;
+  transition: color 0.12s, transform 0.12s var(--ease);
 }
 .nav-item.on {
+  color: var(--brand);
+}
+.nav-item:active,
+.nav-item.pressing {
+  transform: scale(0.92);
   color: var(--brand);
 }
 .nav-fab {
   position: relative;
   justify-self: center;
-  width: 50px;
-  height: 50px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--fuel) 0%, var(--brand) 55%, var(--elec) 110%);
+  background: linear-gradient(135deg, var(--fuel) 0%, var(--brand) 52%, var(--elec) 108%);
   color: #fff;
   display: grid;
   place-items: center;
-  box-shadow: inset 0 1px 0 var(--glass-hi), 0 8px 18px -8px var(--brand);
-  transition: transform 0.15s var(--ease);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 6px 16px -6px var(--brand);
+  transition: transform 0.12s var(--ease), box-shadow 0.12s;
 }
-.nav-fab:active {
-  transform: scale(0.93);
+.nav-fab:active,
+.nav-fab.pressing {
+  transform: scale(0.9);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 3px 10px -4px var(--brand);
 }
 @media (prefers-reduced-motion: reduce) {
   .nav-ind {

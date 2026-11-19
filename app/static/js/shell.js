@@ -1,6 +1,5 @@
 /* shell.js — 登录后的整体布局：PC 侧栏、顶栏、底部导航、右侧栏、车辆切换与「＋」面板 */
 import { icon } from "./icons.js";
-import { initGlass } from "./glass.js";
 import { currentRoute, navigate } from "./router.js";
 import { ENERGY_LABEL, canEdit, currentVehicle, on, setVehicle, state } from "./state.js";
 import { avatar, sheet } from "./ui.js";
@@ -61,11 +60,64 @@ export function buildShell() {
   });
   $("#bell").addEventListener("click", () => navigate("/reminders"));
   $("#fab").addEventListener("click", () => openQuickAdd());
+  bindFastNav($("#bottom-nav"));
   window.addEventListener("scroll", () => $("#topbar")?.classList.toggle("scrolled", window.scrollY > 4), { passive: true });
   on("vehicle-changed", refreshChrome);
-  initGlass($("#bottom-nav"));
   built = true;
   refreshChrome();
+}
+
+/** 移动端惯性滚动未结束时，浏览器会吞掉首次 click；在底栏上用轻触判定直接触发切换，并抑制随后的重复 click。 */
+function bindFastNav(nav) {
+  let startX = 0;
+  let startY = 0;
+  let startT = 0;
+  let target = null;
+  let lastTouchAct = 0;
+  const clearPress = () => {
+    target?.classList.remove("pressing");
+    target = null;
+  };
+  nav.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return clearPress();
+    const el = e.target.closest(".nav-item, #fab");
+    if (!el) return;
+    target = el;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    startT = Date.now();
+    el.classList.add("pressing");
+  }, { passive: true });
+  nav.addEventListener("touchmove", (e) => {
+    if (!target || !e.touches.length) return;
+    if (Math.hypot(e.touches[0].clientX - startX, e.touches[0].clientY - startY) > 12) clearPress();
+  }, { passive: true });
+  nav.addEventListener("touchcancel", clearPress, { passive: true });
+  nav.addEventListener("touchend", (e) => {
+    const el = target;
+    clearPress();
+    if (!el || !e.changedTouches.length) return;
+    const t = e.changedTouches[0];
+    if (Date.now() - startT > 350 || Math.hypot(t.clientX - startX, t.clientY - startY) > 12) return;
+    e.preventDefault();
+    lastTouchAct = Date.now();
+    if (el.id === "fab") openQuickAdd();
+    else {
+      const href = el.getAttribute("href");
+      if (!href) return;
+      if (href === location.pathname && window.scrollY > 40) {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } else {
+        navigate(href);
+      }
+    }
+  }, { passive: false });
+  nav.addEventListener("click", (e) => {
+    if (Date.now() - lastTouchAct < 450) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, true);
 }
 
 function navItem(n) {
