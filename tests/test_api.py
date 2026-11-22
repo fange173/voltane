@@ -21,6 +21,53 @@ def seed_a(c):
                fuel_is_full=True, soc_before_pct=20)
 
 
+def test_estimated_odometer_filter_matches_health(vehicle):
+    actual = rec(vehicle, odometer_km=10000, source="backfill").json()["record"]
+    estimated = rec(vehicle, occurred_at="2026-09-02T08:00").json()["record"]
+    charging = rec(vehicle, kind="charge", status="in_progress", occurred_at="2026-09-03T08:00", soc_before_pct=30)
+    assert charging.status_code == 200
+    deleted = rec(vehicle, occurred_at="2026-09-04T08:00").json()["record"]
+    assert vehicle.delete(f"/api/records/{deleted['id']}").status_code == 200
+
+    health = vehicle.get(f"/api/vehicles/{vehicle.vid}/health").json()
+    issue = next(i for i in health["issues"] if i["key"] == "est_odo")
+    assert issue["text"] == "有 1 条记录的里程是估算的"
+
+    def ids(kind):
+        r = vehicle.get("/api/records", params={"vehicle_id": vehicle.vid, "kind": kind})
+        assert r.status_code == 200
+        return {item["id"] for item in r.json()["items"]}
+
+    assert ids("estimated_odometer") == {estimated["id"]}
+    assert ids("estimated") == {actual["id"], estimated["id"], charging.json()["record"]["id"]}
+
+    response = vehicle.put(f"/api/records/{estimated['id']}", json={
+        **estimated, "odometer_km": 10050, "odometer_estimated": False,
+    })
+    assert response.status_code == 200
+    assert not ids("estimated_odometer")
+
+
+def test_estimated_odometer_filter_without_real_reading(vehicle):
+    missing = rec(vehicle, occurred_at="2026-09-01T08:00").json()["record"]
+    estimated = rec(vehicle, occurred_at="2026-09-02T08:00", odometer_km=10000,
+                    odometer_estimated=True).json()["record"]
+
+    def estimated_ids():
+        r = vehicle.get("/api/records", params={"vehicle_id": vehicle.vid, "kind": "estimated_odometer"})
+        assert r.status_code == 200
+        return {item["id"] for item in r.json()["items"]}
+
+    assert estimated_ids() == {estimated["id"]}
+    health = vehicle.get(f"/api/vehicles/{vehicle.vid}/health").json()
+    assert next(i for i in health["issues"] if i["key"] == "est_odo")["text"] == "有 1 条记录的里程是估算的"
+
+    rec(vehicle, occurred_at="2026-09-03T08:00", odometer_km=10100)
+    assert estimated_ids() == {missing["id"], estimated["id"]}
+    health = vehicle.get(f"/api/vehicles/{vehicle.vid}/health").json()
+    assert next(i for i in health["issues"] if i["key"] == "est_odo")["text"] == "有 2 条记录的里程是估算的"
+
+
 def test_record_flow_and_segment_preview(vehicle):
     r = seed_a(vehicle)
     assert r.status_code == 200

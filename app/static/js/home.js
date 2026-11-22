@@ -10,6 +10,8 @@ import { MIN_CENTS, MIN_KM, avatar, bindSegmented, changeTag, emptyState, helpTi
 import { $, $$, ago, api, durationText, esc, fixed, fmtDate, html, km, money, num, parseLocal, raw } from "./util.js";
 
 const RANGES = [["month", "本月"], ["30d", "近30天"], ["year", "今年"], ["all", "全部"]];
+let costScopeSaving = false;
+let costData = null;
 const HINT = {
   need_start: "还没有记录：先记一条「状态快照」或一次「加满」作为起点",
   need_full: "下次加油建议加满，之后油耗就准了",
@@ -55,6 +57,7 @@ function welcome(el) {
 function render(el, v, d, reload) {
   const p = d.period;
   const prev = d.prev;
+  costData = { p, prev };
   // 上期里程太少时每公里成本的环比没有参考意义
   const prevCpk = (k) => (prev && prev.mileage >= MIN_KM ? prev[k] : null);
   const editable = canEdit(v);
@@ -68,7 +71,7 @@ function render(el, v, d, reload) {
         </div>
         <div class="kpi-grid">
           ${kpi("里程", km(p.mileage), "km", changeTag(p.mileage, prev?.mileage, { neutral: true, min: MIN_KM }), "road")}
-          ${kpi("总花费", money(p.total_cents, { digits: p.total_cents >= 1000000 ? 0 : 2 }), "", changeTag(p.total_cents, prev?.total_cents, { min: MIN_CENTS }), "wallet", p.summary_cents ? "含汇总分摊" : "")}
+          <div id="home-cost-card">${costCard(p, prev)}</div>
           ${v.has_fuel ? kpi("加油", num(p.fuel_l, 1), "L", raw(`<span class="tiny muted">${p.fuel_count} 次 · ${money(p.fuel_cents)}</span>`), "fuel", "", "fuel") : ""}
           ${v.has_elec ? kpi("充电", num(p.elec_kwh, 0), "kWh", raw(`<span class="tiny muted">${p.elec_count} 次${p.home_share != null ? ` · 家充 ${num(p.home_share * 100, 0)}%` : ""}</span>`), "bolt", "", "elec") : ""}
           ${kpi("每公里补能支出", p.energy_cost_per_km != null ? "¥" + fixed(p.energy_cost_per_km) : "–", "", changeTag(p.energy_cost_per_km, prevCpk("energy_cost_per_km")), "coin")}
@@ -90,6 +93,7 @@ function render(el, v, d, reload) {
     savePref("home_range", k);
     reload();
   });
+  bindCostCard(el);
   $("#recent") && bindRows($("#recent"));
   $$("[data-quick]", el).forEach((b) => b.addEventListener("click", async () => {
     const { openRecordForm } = await import("./record-form.js");
@@ -127,9 +131,48 @@ function chargingCard(r) {
 const HELP_CPK = "花费 ÷ 里程。保险按保险期间（没填就按一年）按天摊销，只算落在这段时间里的部分；「总花费」仍按实际付款计。";
 const HELP_EQUIV = "油和电取同一区间：油耗 + 电耗 ÷ 8.9（1 L 汽油约等于 8.9 kWh 电）就是折合油耗，能直接和燃油车比较。";
 
-function kpi(label, value, unit, delta, ico, sub = "", tone = "", help = "") {
+function costCard(p, prev) {
+  const energyOnly = pref("home_cost_scope", "all") === "energy";
+  const key = energyOnly ? "energy_cents" : "total_cents";
+  return kpi(energyOnly ? "油电花费" : "总花费", money(p[key], { digits: p[key] >= 1000000 ? 0 : 2 }), "",
+    changeTag(p[key], prev?.[key], { min: MIN_CENTS }), "wallet", p.summary_cents ? "含汇总分摊" : "", "", "",
+    html`<button type="button" class="cost-scope-toggle" aria-label="${energyOnly ? "切换为全部花费" : "切换为油电花费"}" ${costScopeSaving ? "disabled" : ""}>切换</button>`);
+}
+
+function bindCostCard(el) {
+  const card = $("#home-cost-card", el);
+  card.addEventListener("click", async (e) => {
+    if (!e.target.closest(".cost-scope-toggle") || costScopeSaving || !state.user) return;
+    const user = state.user;
+    const previous = user.settings?.home_cost_scope;
+    const next = previous === "energy" ? "all" : "energy";
+    costScopeSaving = true;
+    user.settings = { ...(user.settings || {}), home_cost_scope: next };
+    updateCostCard(el);
+    try {
+      await api("/api/auth/settings", { method: "PUT", body: { home_cost_scope: next } });
+    } catch (ex) {
+      if (previous === undefined) {
+        delete user.settings.home_cost_scope;
+      } else {
+        user.settings.home_cost_scope = previous;
+      }
+      toastError(ex);
+    } finally {
+      costScopeSaving = false;
+      updateCostCard(el);
+    }
+  });
+}
+
+function updateCostCard(el) {
+  const card = location.pathname === "/" && $("#home-cost-card", el);
+  if (card && costData) card.innerHTML = String(costCard(costData.p, costData.prev));
+}
+
+function kpi(label, value, unit, delta, ico, sub = "", tone = "", help = "", action = "") {
   return html`<div class="kpi card ${tone}">
-    <div class="kpi-label">${raw(icon(ico, 16))}${label}${help ? helpTip(help) : ""}</div>
+    <div class="kpi-label">${raw(icon(ico, 16))}${label}${help ? helpTip(help) : ""}${action}</div>
     <div class="kpi-value num">${value}<small>${unit}</small></div>
     <div class="kpi-foot">${delta || ""}${sub ? html`<span class="tiny muted">${sub}</span>` : ""}</div></div>`;
 }

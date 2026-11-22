@@ -223,6 +223,16 @@
   align-items: center;
   gap: 5px;
 }
+#home-cost-card > .kpi {
+  height: 100%;
+}
+.cost-scope-toggle {
+  margin-left: auto;
+  padding: 6px 0 6px 8px;
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 600;
+}
 .kpi.fuel .kpi-label svg {
   color: var(--fuel-strong);
 }

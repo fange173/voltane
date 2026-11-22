@@ -436,9 +436,9 @@ export async function vehiclePage() {
 }
 
 function issueAction(i, editable) {
-  if (!editable) return "";
+  if (!editable && i.action !== "filter_estimated") return "";
   const map = { fix_missed: "补一条", record_fuel: "记加油", edit_vehicle: "去填写", finish_charge: "结束", open_summaries: "查看",
-    filter_estimated: "查看", fix_delivery: "修正", open_records: "去看看" };
+    filter_estimated: "查看记录", fix_delivery: "修正", open_records: "去看看" };
   return map[i.action] ? html`<button class="btn btn-sm btn-soft" data-act="${i.action}" data-key="${i.key}">${map[i.action]}</button>` : "";
 }
 
@@ -504,6 +504,7 @@ function bindVehiclePage(el, v, members, summaries, invites) {
 }
 
 async function issueGo(v, act, key) {
+  if (act === "filter_estimated") return navigate("/records?filter=estimated_odometer");
   const { openRecordForm } = await import("./record-form.js");
   if (act === "fix_missed") {
     const h = await api(`/api/vehicles/${v.id}/health`);
@@ -514,7 +515,7 @@ async function issueGo(v, act, key) {
     emit("data-changed");
   } else if (act === "record_fuel") openRecordForm({ kind: "fuel" });
   else if (act === "edit_vehicle") editVehicle(v);
-  else if (act === "filter_estimated" || act === "open_records") navigate("/records");
+  else if (act === "open_records") navigate("/records");
   else if (act === "fix_delivery") {
     const h = await api(`/api/vehicles/${v.id}/health`);
     const i = h.issues.find((x) => x.key === key);

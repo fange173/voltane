@@ -58,15 +58,16 @@ function shared(vid) {
 }
 
 export function itemRow(it, { showDate = true } = {}) {
+  const estimatedOdo = it.type === "record" && (it.odometer_estimated || it.odometer_km == null);
   const sub = [];
   if (showDate) sub.push(relDay(it.occurred_at, { week: false }) + " " + it.occurred_at.slice(11, 16));
   else sub.push(it.occurred_at.slice(11, 16));
   if (it.odometer_km != null && !it.odometer_estimated) sub.push(km(it.odometer_km) + " km");
-  else if (it.type === "record" && it.odometer_estimated) sub.push("里程估算");
   if (it.place_name) sub.push(it.place_name);
   if (it.type === "expense" && it.vendor) sub.push(it.vendor);
   const cents = it.amount_cents;
   const tags = [];
+  if (estimatedOdo) tags.push(html`<span class="badge warn">${it.odometer_km == null ? "里程未填" : "里程估算"}</span>`);
   if (it.kind === "fuel" && it.fuel_is_full) tags.push(html`<span class="badge fuel">满</span>`);
   if (it.source === "backfill" || it.source === "import") tags.push(raw(`<span class="src-ico" title="补录" aria-label="补录">${icon("history", 13)}</span>`));
   if (it.source === "auto_fix") tags.push(html`<span class="badge warn">自动补</span>`);
@@ -92,6 +93,7 @@ export function bindRows(root) {
 
 /* ---------- 时间线页 ---------- */
 
+const ESTIMATED_ODO = "estimated_odometer";
 const FILTERS = [
   ["", "全部"],
   ["fuel", "加油"],
@@ -101,39 +103,55 @@ const FILTERS = [
   ["mine", "我记的"],
   ["anomaly", "有异常"],
   ["estimated", "补录/估算"],
+  [ESTIMATED_ODO, "里程估算"],
 ];
 
-let filter = "";
-let query = "";
+let savedFilter = "";
+let savedQuery = "";
 
-export async function recordsPage() {
+export async function recordsPage({ query: routeQuery } = {}) {
   resetView();
   setNav("records");
   setTitle("记录");
   const v = currentVehicle();
   const el = view();
   if (!v) return navigate("/");
+  const estimatedOnly = routeQuery?.filter === ESTIMATED_ODO;
+  let filter = estimatedOnly ? ESTIMATED_ODO : savedFilter;
+  let query = estimatedOnly ? "" : savedQuery;
   const filters = FILTERS.filter(([k]) => (k === "fuel" ? v.has_fuel : k === "charge" ? v.has_elec : true));
   el.innerHTML = String(html`
     <div class="toolbar">
-      <div class="chips" id="rec-filters">${filters.map(([k, l]) => html`<button class="chip sm ${k === filter ? "on" : ""}" data-v="${k}">${l}</button>`)}</div>
+      <div class="chips" id="rec-filters">${filters.map(([k, l]) => html`<button class="chip sm ${k === filter ? "on" : ""}" data-v="${k}" aria-pressed="${k === filter ? "true" : "false"}">${l}</button>`)}</div>
       <div class="search-box"><span class="muted">${raw(icon("search", 18))}</span><input class="input" id="rec-q" placeholder="搜索地点、备注" value="${query}"></div>
     </div>
     <div id="rec-list">${skeleton(6, 64)}</div>`);
   $("#rec-filters").addEventListener("click", (e) => {
     const c = e.target.closest("[data-v]");
-    if (!c) return;
-    filter = c.dataset.v;
-    $$("#rec-filters .chip").forEach((x) => x.classList.toggle("on", x === c));
+    if (!c || c.dataset.v === filter) return;
+    if (c.dataset.v === ESTIMATED_ODO) return navigate("/records?filter=" + ESTIMATED_ODO);
+    savedFilter = c.dataset.v;
+    if (estimatedOnly) {
+      savedQuery = query;
+      return navigate("/records", { replace: true });
+    }
+    filter = savedFilter;
+    $$("#rec-filters .chip").forEach((x) => {
+      x.classList.toggle("on", x === c);
+      x.setAttribute("aria-pressed", String(x === c));
+    });
     load(true);
   });
   $("#rec-q").addEventListener("input", debounce((e) => {
     query = e.target.value.trim();
+    if (!estimatedOnly && list.isConnected) savedQuery = query;
     load(true);
   }, 300));
-  bindRows($("#rec-list"));
-  let items = [];
+  const list = $("#rec-list");
+  bindRows(list);
+  let items = null;
   let next = null;
+  let request = 0;
   // 月份里程用统计接口的口径（按里程表插值分摊），和概览、里程页一致
   let monthKm = {};
   const loadMonthKm = () => api(`/api/stats/mileage?vehicle_id=${v.id}`).then((r) => {
@@ -142,28 +160,31 @@ export async function recordsPage() {
   }).catch(() => {});
   loadMonthKm();
   const load = async (reset = false) => {
+    if (!list.isConnected) return;
+    const id = ++request;
     if (reset) {
-      items = [];
+      items = null;
       next = null;
+      list.innerHTML = String(skeleton(6, 64));
     }
     const p = new URLSearchParams({ vehicle_id: v.id, limit: 60 });
-    if (["fuel", "charge", "snapshot", "expense", "estimated"].includes(filter)) p.set("kind", filter);
+    if (["fuel", "charge", "snapshot", "expense", "estimated", ESTIMATED_ODO].includes(filter)) p.set("kind", filter);
     if (filter === "mine") p.set("mine", "true");
     if (filter === "anomaly") p.set("anomaly", "true");
     if (query) p.set("q", query);
     if (next) p.set("before", next);
     try {
       const r = await api("/api/records?" + p);
-      items = items.concat(r.items);
+      if (id !== request || !list.isConnected) return;
+      items = (items || []).concat(r.items);
       next = r.next;
       draw();
     } catch (e) {
-      $("#rec-list").innerHTML = String(emptyState({ ico: "warning", title: "加载失败", text: e.message }));
+      if (id === request && list.isConnected) list.innerHTML = String(emptyState({ ico: "warning", title: "加载失败", text: e.message }));
     }
   };
   const draw = () => {
-    const list = $("#rec-list");
-    if (!list) return;
+    if (!list.isConnected || !items) return;
     const pend = filter ? [] : pending().filter((x) => x.vehicle_id === v.id).map((x) => ({
       ...x.body, type: x.url.includes("expenses") ? "expense" : "record", pending: true, id: null,
     }));
@@ -171,7 +192,7 @@ export async function recordsPage() {
     if (!all.length) {
       list.innerHTML = String(emptyState({
         ico: "list",
-        title: filter || query ? "没有符合条件的记录" : "还没有记录",
+        title: estimatedOnly && !query ? "没有里程估算的记录" : filter || query ? "没有符合条件的记录" : "还没有记录",
         text: filter || query ? "换个筛选条件试试" : "点下方「＋」记第一笔，建议从一次「加满」或「状态快照」开始",
       }));
       return;
@@ -188,14 +209,17 @@ export async function recordsPage() {
         <div class="card flush list">${arr.map((it) => itemRow(it))}</div>
       </section>`)}
       ${next ? html`<button class="btn btn-block btn-ghost" id="more">加载更多</button>` : html`<p class="end-mark">— 共 ${all.length} 条 —</p>`}`);
-    $("#more")?.addEventListener("click", () => load());
+    $("#more", list)?.addEventListener("click", (e) => {
+      e.currentTarget.disabled = true;
+      load();
+    });
   };
   listen("data-changed", () => {
     load(true);
     loadMonthKm();
   });
   listen("outbox-changed", draw);
-  listen("vehicle-changed", () => recordsPage());
+  listen("vehicle-changed", () => recordsPage({ query: routeQuery }));
   await load(true);
 }
 

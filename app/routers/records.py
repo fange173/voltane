@@ -370,7 +370,7 @@ def list_records(vehicle_id: int, kind: Optional[str] = None, q: Optional[str] =
                  source: Optional[str] = None, anomaly: bool = False, before: Optional[datetime] = None,
                  date_from: Optional[date] = None, date_to: Optional[date] = None, limit: int = 50,
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """时间线：记录和费用合并，按时间倒序分页（before 为游标）。kind 可选 fuel/charge/snapshot/expense。"""
+    """时间线按时间倒序分页。kind 可选 fuel/charge/snapshot/expense/estimated/estimated_odometer。"""
     from app.database import Expense
     from app.services import expense_dict
 
@@ -379,12 +379,19 @@ def list_records(vehicle_id: int, kind: Optional[str] = None, q: Optional[str] =
     led = load_ledger(db, v)
     badge = _badges(led)
     items = []
-    if kind in (None, "", "fuel", "charge", "snapshot", "estimated"):
+    if kind in (None, "", "fuel", "charge", "snapshot", "estimated", "estimated_odometer"):
         rq = select(Record).where(Record.vehicle_id == v.id, Record.deleted_at.is_(None))
         if kind in ("fuel", "charge", "snapshot"):
             rq = rq.where(Record.kind == kind)
         if kind == "estimated":
             rq = rq.where(or_(Record.odometer_estimated.is_(True), Record.source != "manual"))
+        if kind == "estimated_odometer":
+            rq = rq.where(Record.status == "done")
+            # 和数据体检一致：原始里程为空时，至少有一个实测读数才能推算。
+            if any(not p.odo_estimated for p in led.points):
+                rq = rq.where(or_(Record.odometer_estimated.is_(True), Record.odometer_km.is_(None)))
+            else:
+                rq = rq.where(Record.odometer_estimated.is_(True), Record.odometer_km.is_not(None))
         if source:
             rq = rq.where(Record.source == source)
         if mine:
