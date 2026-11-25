@@ -82,7 +82,8 @@ export function wizardPage() {
         await loadVehicles();
         setVehicle(res.id);
         refreshChrome();
-        toast(`已添加「${res.name}」`, { sub: "以后加油尽量加满、充电时填一下电量，能耗就会越来越准" });
+        const tips = [hasFuel(st.v.energy_type) && "加油尽量加满", hasElec(st.v.energy_type) && "充电时填一下电量"].filter(Boolean);
+        toast(`已添加「${res.name}」`, { sub: `以后${tips.join("、")}，能耗就会越来越准` });
         navigate("/");
       } catch (ex) {
         $("#wiz-err").textContent = ex.message;
@@ -112,7 +113,7 @@ function step2(st) {
     ${hasFuel(t) ? html`<div class="field"><label>油箱容积</label><div class="input-wrap"><input class="input num" name="tank_capacity_l" inputmode="decimal" value="${v.tank_capacity_l ?? ""}" placeholder="如 48"><span class="unit">L</span></div>
       <span class="hint">用于「加满自动算油量」和油表读数换算，可查官方参数</span></div>` : ""}
     ${hasElec(t) ? html`<div class="field"><label>电池可用容量</label><div class="input-wrap"><input class="input num" name="battery_usable_kwh" inputmode="decimal" value="${v.battery_usable_kwh ?? ""}" placeholder="如 18.3"><span class="unit">kWh</span></div>
-      <span class="hint">常见：18.3 / 26.6 / 46 / 60 / 75 kWh。不确定可以不填，充几次电后会自动校准</span></div>
+      <span class="hint">填电池侧可用容量，不是充电桩的满充度数。不确定可留空；记录桩侧度数与起止电量后，可自动校准电量换算系数。</span></div>
       <div class="field"><label>平时充电上限</label><div class="input-wrap"><input class="input num" name="charge_limit_pct" inputmode="numeric" value="${v.charge_limit_pct}"><span class="unit">%</span></div></div>
       <div class="field"><label>常用充电方式</label><div class="chips" data-ctype>${Object.entries(CHARGE_LABEL).map(([k, l]) => html`<button type="button" class="chip sm ${v.default_charge_type === k ? "on" : ""}" data-v="${k}">${l}</button>`)}</div></div>` : ""}
     ${hasFuel(t) ? html`<div class="field"><label>默认标号</label><div class="chips" data-grade>${FUEL_GRADES.map((g) => html`<button type="button" class="chip sm ${v.default_fuel_grade === g ? "on" : ""}" data-v="${g}">${gradeLabel(g)}</button>`)}</div></div>
@@ -424,12 +425,12 @@ export async function vehiclePage() {
           <a class="list-item" data-link href="/vehicles/new">${raw(`<span class="ico sm">${icon("plus", 16)}</span>`)}<span class="grow">添加另一辆车</span>${raw(icon("right", 16))}</a>
         </div>
 
-        ${(owner || members.filter((m) => m.role === "owner").length > 1) ? html`<div class="section-title"><span>管理与危险操作</span></div>
+        <div class="section-title"><span>${owner ? "管理与危险操作" : "成员操作"}</span></div>
         <div class="card flush list">
           ${owner ? html`<button class="list-item" id="v-archive">${raw(`<span class="ico sm">${icon("box", 16)}</span>`)}<span class="grow">${v.is_archived ? "取消归档" : "归档（卖掉的车）"}</span></button>` : ""}
           ${!owner || members.filter((m) => m.role === "owner").length > 1 ? html`<button class="list-item" id="v-leave">${raw(`<span class="ico sm warn">${icon("logout", 16)}</span>`)}<span class="grow">退出这辆车</span></button>` : ""}
           ${owner ? html`<button class="list-item" id="v-delete">${raw(`<span class="ico sm danger">${icon("trash", 16)}</span>`)}<span class="grow danger-c">删除车辆和全部数据</span></button>` : ""}
-        </div>` : ""}
+        </div>
       </div>
     </div></div>`);
   bindVehiclePage($("#vpage", el), v, members, summaries, invites);
@@ -454,6 +455,12 @@ function bindVehiclePage(el, v, members, summaries, invites) {
         await api(`/api/vehicles/${v.id}/hints/dismiss`, { method: "POST", body: { key: t.dataset.dismiss } });
         t.closest(".issue").remove();
       } else if (t.dataset.act) {
+        if (t.dataset.act === "open_summaries") {
+          const id = Number(t.dataset.key.split(":")[1]);
+          const summary = summaries.find((s) => s.id === id);
+          if (summary) summarySheet(v, summary);
+          return;
+        }
         await issueGo(v, t.dataset.act, t.dataset.key);
       } else if (t.dataset.role) {
         roleSheet(v, members.find((m) => m.id === +t.dataset.role), invites.length > 0);

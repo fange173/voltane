@@ -1,6 +1,6 @@
 /* records.js — 时间线（记录 + 费用）、条目渲染、详情面板（含能耗算式与段标签） */
 import { CATEGORY_ICON, icon } from "./icons.js";
-import { pending } from "./outbox.js";
+import { confirmDuplicate, pending } from "./outbox.js";
 import { navigate } from "./router.js";
 import { listen, resetView, setNav, setTitle, view } from "./shell.js";
 import {
@@ -71,9 +71,12 @@ export function itemRow(it, { showDate = true } = {}) {
   if (it.kind === "fuel" && it.fuel_is_full) tags.push(html`<span class="badge fuel">满</span>`);
   if (it.source === "backfill" || it.source === "import") tags.push(raw(`<span class="src-ico" title="补录" aria-label="补录">${icon("history", 13)}</span>`));
   if (it.source === "auto_fix") tags.push(html`<span class="badge warn">自动补</span>`);
-  if (it.pending) tags.push(html`<span class="badge warn">待同步</span>`);
+  if (it.pending) {
+    tags.push(html`<span class="badge warn">${it.duplicate ? "可能重复 · 点此核对" : "待同步"}</span>`);
+    if (it.error) sub.push(it.error);
+  }
   const badges = (it.badges || []).map(badgeHtml).filter(Boolean);
-  return html`<button class="list-item rec-row ${it.pending ? "pending" : ""}" data-type="${it.type}" data-id="${it.id ?? ""}">
+  return html`<button class="list-item rec-row ${it.pending ? "pending" : ""}" data-type="${it.type}" data-id="${it.id ?? ""}" data-duplicate="${it.duplicate ? it.client_id : ""}">
     ${itemIcon(it)}
     <span class="grow"><span class="rec-title"><span class="t">${itemTitle(it)}</span> ${tags}</span>
       <span class="rec-sub">${sub.join(" · ")}</span></span>
@@ -82,10 +85,20 @@ export function itemRow(it, { showDate = true } = {}) {
   </button>`;
 }
 
+const boundRows = new WeakSet();
+
 /** 绑定列表点击 → 打开详情。 */
 export function bindRows(root) {
+  if (boundRows.has(root)) return;
+  boundRows.add(root);
   root.addEventListener("click", (e) => {
     const r = e.target.closest(".rec-row");
+    if (r?.dataset.duplicate) {
+      const id = r.dataset.duplicate;
+      confirmDialog({ title: "这是一笔不同的记录吗？", message: "已有相似记录。确认是另一笔才保存；取消会保留待同步记录。", ok: "仍然保存" })
+        .then((yes) => yes && confirmDuplicate(id)).catch(toastError);
+      return;
+    }
     if (!r || !r.dataset.id) return;
     openDetail(r.dataset.type, +r.dataset.id);
   });
@@ -125,6 +138,7 @@ export async function recordsPage({ query: routeQuery } = {}) {
       <div class="chips" id="rec-filters">${filters.map(([k, l]) => html`<button class="chip sm ${k === filter ? "on" : ""}" data-v="${k}" aria-pressed="${k === filter ? "true" : "false"}">${l}</button>`)}</div>
       <div class="search-box"><span class="muted">${raw(icon("search", 18))}</span><input class="input" id="rec-q" placeholder="搜索地点、备注" value="${query}"></div>
     </div>
+    ${estimatedOnly ? html`<p class="tiny muted">筛选：里程估算</p>` : ""}
     <div id="rec-list">${skeleton(6, 64)}</div>`);
   $("#rec-filters").addEventListener("click", (e) => {
     const c = e.target.closest("[data-v]");
@@ -172,7 +186,7 @@ export async function recordsPage({ query: routeQuery } = {}) {
     if (filter === "mine") p.set("mine", "true");
     if (filter === "anomaly") p.set("anomaly", "true");
     if (query) p.set("q", query);
-    if (next) p.set("before", next);
+    if (next) p.set("cursor", next);
     try {
       const r = await api("/api/records?" + p);
       if (id !== request || !list.isConnected) return;
@@ -186,7 +200,7 @@ export async function recordsPage({ query: routeQuery } = {}) {
   const draw = () => {
     if (!list.isConnected || !items) return;
     const pend = filter ? [] : pending().filter((x) => x.vehicle_id === v.id).map((x) => ({
-      ...x.body, type: x.url.includes("expenses") ? "expense" : "record", pending: true, id: null,
+      ...x.body, type: x.url.includes("expenses") ? "expense" : "record", pending: true, duplicate: x.duplicate, error: x.error, id: null,
     }));
     const all = pend.concat(items);
     if (!all.length) {
@@ -205,7 +219,7 @@ export async function recordsPage({ query: routeQuery } = {}) {
     }
     list.innerHTML = String(html`${[...groups].map(([m, arr]) => html`
       <section class="month-group">
-        <div class="month-head"><b>${m.replace("-", " 年 ")} 月</b><span>${monthSummary(arr, monthKm[m])}</span></div>
+        <div class="month-head"><b>${m.replace("-", " 年 ")} 月</b><span>${monthSummary(arr, monthKm[m], { partial: Boolean(filter || query || next) })}</span></div>
         <div class="card flush list">${arr.map((it) => itemRow(it))}</div>
       </section>`)}
       ${next ? html`<button class="btn btn-block btn-ghost" id="more">加载更多</button>` : html`<p class="end-mark">— 共 ${all.length} 条 —</p>`}`);
@@ -223,23 +237,39 @@ export async function recordsPage({ query: routeQuery } = {}) {
   await load(true);
 }
 
-function monthSummary(arr, mk) {
+export function monthSummary(arr, mk, { partial = false } = {}) {
   let cents = 0;
+  let hasAmount = false;
+  let missing = 0;
   let fuel = 0;
   let kwh = 0;
   const odos = [];
   for (const it of arr) {
-    cents += (it.amount_cents) || 0;
+    if (it.odometer_km != null && !it.odometer_estimated) odos.push(it.odometer_km);
+    if (it.pending || it.status === "in_progress") continue;
+    if (it.type === "expense" || it.kind === "fuel" || it.kind === "charge") {
+      if (it.amount_cents == null) missing++;
+      else {
+        cents += it.amount_cents;
+        hasAmount = true;
+      }
+    }
+    if (it.extra_fee_cents != null) {
+      cents += it.extra_fee_cents;
+      hasAmount = true;
+    }
     if (it.kind === "fuel") fuel += it.fuel_liters || 0;
     if (it.kind === "charge") kwh += it.charge_kwh || 0;
-    if (it.odometer_km != null && !it.odometer_estimated) odos.push(it.odometer_km);
   }
-  const parts = [money(cents)];
+  const subtotal = money(cents, { digits: 2 });
+  const parts = missing ? [hasAmount ? `已知 ${subtotal}，${missing} 笔未填` : "金额未填"]
+    : hasAmount ? [subtotal] : [];
   if (fuel) parts.push(num(fuel, 1) + "L");
   if (kwh) parts.push(num(kwh, 0) + "kWh");
   if (mk != null) {
     if (mk > 0) parts.push(km(mk) + "km");
   } else if (odos.length > 1) parts.push(km(Math.max(...odos) - Math.min(...odos)) + "km");
+  if (partial && parts.length) parts.unshift("当前列表");
   return parts.join(" · ");
 }
 
@@ -344,13 +374,12 @@ function detailHtml(d, v) {
 }
 
 /** 综合段和同区间的油段重复时只显示综合段，并过滤掉无意义的 0 耗电静置段。 */
-function dedupeSegments(segs) {
-  const comb = segs.filter((s) => s.energy === "combined");
-  return segs.filter((s) => {
-    if (s.energy === "fuel" && comb.some((c) => c.start_id === s.start_id && c.end_id === s.end_id)) return false;
-    if (s.kind === "idle" && s.status === "ok" && (s.idle_amount ?? s.amount ?? 0) <= 0.05 && !s.anomaly) return false;
-    return true;
-  });
+export function dedupeSegments(segs) {
+  const displayed = segs.filter((s) => s.kind !== "idle" || s.status !== "ok" || s.anomaly ||
+    (s.idle_amount ?? s.amount ?? 0) > 0.05 || (s.energy === "combined" && s.elec_kwh > 0.05));
+  const comb = displayed.filter((s) => s.energy === "combined" && s.status === "ok" &&
+    (s.kind === "idle" ? s.elec_kwh != null : s.per100 != null && s.elec_per100 != null));
+  return displayed.filter((s) => s.energy !== "fuel" || !comb.some((c) => c.start_id === s.start_id && c.end_id === s.end_id));
 }
 
 function fmtVal(x, unit) {
@@ -365,7 +394,9 @@ function segmentCard(s, d, v) {
   const head = s.status !== "ok"
     ? html`<span class="badge warn">${{ missed: "有漏记，未计算", negative: "数据异常（消耗为负）", incomplete: "期间有汇总补能，不单独计算", uncertain }[s.status] || "无法计算"}</span>`
     : s.kind === "idle"
-      ? html`<b class="num seg-big">${num(s.idle_amount ?? s.amount)} <small>kWh</small></b><span class="muted small">${s.per_day != null ? `${num(s.days, 1)} 天 · ${num(s.per_day)} kWh/天` : "估算 · 停车时长未知"}</span>${helpTip(IDLE_HELP)}`
+      ? html`<b class="num seg-big">${num(s.idle_amount ?? s.amount)} <small>${unit}</small></b>
+        ${isComb && s.elec_kwh != null ? html`<b class="num seg-big elec-c">${num(s.elec_kwh)} <small>${s.distance < 1 ? "kWh" : "kWh（本段用电）"}</small></b>` : ""}
+        <span class="muted small">${s.per_day != null ? `${num(s.days, 1)} 天 · ${num(s.per_day)} ${unit}/天${isComb && s.elec_kwh != null && s.days > 0 ? ` · ${num(s.elec_kwh / s.days)} kWh/天` : ""}` : "估算 · 停车时长未知"}</span>${unit === "kWh" ? helpTip(IDLE_HELP) : ""}`
       : isComb
         ? html`<b class="num seg-big fuel-c">${num(s.per100)} <small>L</small></b><b class="num seg-big elec-c">${s.elec_per100 != null ? num(s.elec_per100) : "–"} <small>kWh</small></b><span class="muted small">/100km</span>`
         : html`<b class="num seg-big ${s.energy === "fuel" ? "fuel-c" : "elec-c"}">${num(s.per100)} <small>${unit}/100km</small></b>${qTag(s.quality, s.err100)}`;

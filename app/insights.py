@@ -75,13 +75,16 @@ def health_report(db: Session, v: Vehicle, user: User) -> dict:
     obs = odo_observations(led, load_expenses(db, v.id))
     li = ledger_start_index(led)
     real = [p for p in led.points if not p.odo_estimated]
-    ledger_km = (real[-1].odo - led.points[li].odo) if (li is not None and real) else 0
+    start_odo = led.points[li].odo if li is not None else 0
+    end_odo = real[-1].odo if real else start_odo
+    ledger_km = end_odo - start_odo
     coverage = {}
     for energy, segs, on in (("fuel", led.fuel_segments, led.params.has_fuel),
                              ("elec", led.elec_segments, led.params.has_elec)):
         if not on:
             continue
-        a_km = sum(s.distance for s in segs if s.status == "ok" and s.quality == "A" and s.kind != "idle")
+        a_km = sum(max(0, min(s.end_odo, end_odo) - max(s.start_odo, start_odo))
+                   for s in segs if s.status == "ok" and s.quality == "A" and s.kind != "idle")
         coverage[energy] = round(min(a_km / ledger_km, 1), 3) if ledger_km >= 1 else None
     issues = []
     dismissed = dismissed_keys(db, v.id, user)

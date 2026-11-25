@@ -47,7 +47,7 @@ export function sparkline(values, { color = "brand", w = 120, h = 36, hollow = [
     <path d="${area}" fill="url(#${id})"/>
     <path d="${d}" fill="none" stroke="${css(color)}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
     ${pts.map((p, i) => (hollow[i] ? `<circle cx="${p[0]}" cy="${p[1]}" r="2.2" fill="var(--surface-1)" stroke="${css(color)}" stroke-width="1.5"/>` : "")).join("")}
-    <circle cx="${last[0]}" cy="${last[1]}" r="3" fill="${css(color)}"/></svg>`;
+    ${hollow[pts.length - 1] ? "" : `<circle cx="${last[0]}" cy="${last[1]}" r="3" fill="${css(color)}"/>`}</svg>`;
 }
 
 /* ---------- 通用坐标系 ---------- */

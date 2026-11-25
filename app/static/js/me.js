@@ -237,7 +237,7 @@ function placeSheet(p, v, reload) {
           <div id="tariff-rows" class="stack">${(tariff.length ? tariff : [{ from: "22:00", to: "08:00", price: "" }, { from: "08:00", to: "22:00", price: "" }]).map((t) => tariffRow(t))}</div>
           <button type="button" class="link-btn tiny" id="t-add">${raw(icon("plus", 14))} 加一段</button></div></div>
         <div class="field" data-price><label>默认单价</label><div class="input-wrap"><input class="input num" name="price" inputmode="decimal" value="${p?.last_unit_price ?? ""}"><span class="unit">元</span></div><span class="hint">会随着最近一次记录自动更新</span></div>
-        ${v ? switchRow("shared", `这辆车（${v.name}）的成员共用`, p ? p.shared : true) : ""}
+        ${v && (!p || p.owner_user_id === state.user?.id) ? switchRow("shared", `这辆车（${v.name}）的成员共用`, p ? p.shared : true) : ""}
         ${p ? switchRow("hidden", "隐藏（不出现在记录表单里）", p.is_hidden) : ""}
         <div class="form-error"></div></form>`);
       const getKind = bindSegmented($("#pk", body), (k) => sync(k));
@@ -260,8 +260,8 @@ function placeSheet(p, v, reload) {
         const f = $("form", body);
         const kind = getKind();
         const rows = kind === "home_charger" ? $$(".tariff-row", body).map((r) => ({ from: $("[data-f]", r).value, to: $("[data-to]", r).value, price: toNum($("[data-p]", r).value) })).filter((t) => t.from && t.to && t.price != null) : [];
-        const payload = { vehicle_id: v?.id ?? p?.vehicle_id ?? null, shared: f.shared ? f.shared.checked : !!p?.shared, name: f.name.value.trim(), kind,
-          tou_tariff: rows, last_unit_price: toNum(f.price.value), is_hidden: f.hidden ? f.hidden.checked : false, sort_order: p?.sort_order ?? 0,
+        const payload = { vehicle_id: v?.id ?? p?.vehicle_id ?? null, shared: f.elements.namedItem("shared")?.checked ?? !!p?.shared, name: f.name.value.trim(), kind,
+          tou_tariff: rows, last_unit_price: toNum(f.price.value), is_hidden: f.elements.namedItem("hidden")?.checked ?? false, sort_order: p?.sort_order ?? 0,
           default_charge_type: kind === "home_charger" ? "home" : p?.default_charge_type ?? null, default_fuel_grade: p?.default_fuel_grade ?? null, lat: p?.lat ?? null, lng: p?.lng ?? null };
         if (!payload.name) return ($(".form-error", body).textContent = "请填写名称");
         try {
@@ -344,19 +344,22 @@ export async function dataPage() {
     if (!f) return toast("请先选择文件", { error: true });
     const fd = new FormData();
     fd.append("file", f);
-    setLoading(e.currentTarget, true);
+    const button = e.currentTarget;
+    setLoading(button, true);
     try {
       const r = await api(`/api/import?vehicle_id=${v.id}`, { method: "POST", form: fd });
       emit("data-changed");
-      toast(`已导入 ${r.records} 条记录、${r.expenses} 笔费用`, { action: { label: "撤销", onClick: async () => {
-        await api(`/api/import/${r.batch}?vehicle_id=${v.id}`, { method: "DELETE" });
-        emit("data-changed");
-        toast("已撤销导入");
+      toast(`已导入 ${r.records} 条记录、${r.expenses} 笔费用、${r.summaries} 个汇总、${r.reminders} 个提醒`, { action: { label: "撤销", onClick: async () => {
+        try {
+          const undo = await api(`/api/import/${r.batch}?vehicle_id=${v.id}`, { method: "DELETE" });
+          emit("data-changed");
+          toast(undo.skipped ? `已撤销未变动项，${undo.skipped} 项已变更或不存在，未处理` : "已撤销导入");
+        } catch (error) { toastError(error); }
       } } });
     } catch (ex) {
       $(".form-error", el).textContent = ex.message;
     } finally {
-      setLoading(e.currentTarget, false);
+      setLoading(button, false);
     }
   });
   const loadTrash = async () => {

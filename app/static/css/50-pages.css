@@ -402,14 +402,17 @@
 }
 .resp-2 {
   margin-top: 14px;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+}
+.resp-2 > .card {
+  min-width: 0;
 }
 .resp-2 > .chart-card {
   margin-top: 0;
 }
 @media (min-width: 860px) {
   .resp-2 {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 .big-mid {
@@ -422,6 +425,12 @@
 }
 .k-card {
   margin-top: 14px;
+}
+.calib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+  gap: 10px 16px;
+  margin: 12px 0;
 }
 
 /* ---------- 日历 ---------- */

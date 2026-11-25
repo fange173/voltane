@@ -91,12 +91,15 @@ export function mount(el, content) {
 
 export function num(x, digits = 2) {
   if (x == null || Number.isNaN(x)) return "–";
-  const n = Number(x);
-  return n.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: digits });
+  return formatDecimal(x, 0, digits);
 }
 export function fixed(x, digits = 2) {
   if (x == null || Number.isNaN(x)) return "–";
-  return Number(x).toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return formatDecimal(x, digits, digits);
+}
+function formatDecimal(x, minimumFractionDigits, maximumFractionDigits) {
+  const text = Number(x).toLocaleString("zh-CN", { minimumFractionDigits, maximumFractionDigits });
+  return /^-0(?:\.0+)?$/.test(text) ? text.slice(1) : text;
 }
 export const km = (x) => (x == null ? "–" : Math.round(x).toLocaleString("zh-CN"));
 export function money(cents, { sign = false, digits } = {}) {

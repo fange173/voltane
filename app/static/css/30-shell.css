@@ -364,7 +364,7 @@
   .layout.with-aside {
     grid-template-columns: var(--side-w) minmax(0, 1fr) 320px;
   }
-  .aside {
+  .layout.with-aside > .aside {
     display: block;
     position: sticky;
     top: 0;

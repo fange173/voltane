@@ -786,11 +786,13 @@ function val(form, name) {
 }
 const isUser = (form, name) => !!form[name]?.dataset.user;
 
-function tariffAmount(place, kwh, startISO, minutes) {
+export function tariffAmount(place, kwh, startISO, minutes) {
   const tariff = place?.tou_tariff || [];
   if (!tariff.length || !kwh) return null;
   const start = parseLocal(startISO);
-  if (!start) return null;
+  if (!start || !Number.isFinite(start.getTime())) return null;
+  const seconds = Number(startISO.split("T")[1]?.split(":")[2] || 0);
+  start.setSeconds(seconds);
   const priceAt = (d) => {
     const m = d.getHours() * 60 + d.getMinutes();
     for (const t of tariff) {
@@ -803,12 +805,16 @@ function tariffAmount(place, kwh, startISO, minutes) {
     }
     return tariff[0].price;
   };
-  if (!minutes) return kwh * priceAt(start);
-  // 按分钟把度数平均分摊到各时段
-  const steps = Math.min(minutes, 3 * 24 * 60);
+  if (!(minutes > 0)) return kwh * priceAt(start);
+  if (!Number.isFinite(minutes) || minutes > 7 * 24 * 60) return null;
+  const end = start.getTime() + minutes * 60000;
   let sum = 0;
-  for (let i = 0; i < steps; i += 5) sum += priceAt(new Date(start.getTime() + i * 60000)) * Math.min(5, steps - i);
-  return (kwh * sum) / steps;
+  for (let at = start.getTime(); at < end;) {
+    const next = Math.min(end, (Math.floor(at / 60000) + 1) * 60000);
+    sum += priceAt(new Date(at)) * (next - at);
+    at = next;
+  }
+  return (kwh * sum) / (end - start.getTime());
 }
 
 function recompute(form, v, st) {
@@ -1079,7 +1085,7 @@ async function save(form, ctx, v, st, { record, again = false, startOnly = false
   const err = validate(form, body, st);
   errEl.textContent = err;
   if (err) return;
-  if (!record) body.client_id = uuid();
+  if (!record) body.client_id = (st.clientId ??= uuid());
   else body.version = record.version;
   setLoading(btn, true);
   try {
@@ -1304,7 +1310,7 @@ function renderExpense(form, ctx, v, st, { record, time, keep, preset }) {
       sub_items: category === "insurance" ? $$("[data-ins]", form).filter((i) => toNum(i.value)).map((i) => ({ name: i.dataset.ins, cents: Math.round(toNum(i.value) * 100) })) : [],
     };
     if (record) body.version = record.version;
-    else body.client_id = uuid();
+    else body.client_id = (st.clientId ??= uuid());
     setLoading(btn, true);
     try {
       let res;

@@ -274,7 +274,8 @@ export async function openQuickAdd() {
   const tiles = [];
   if (v.has_fuel) tiles.push(["fuel", "fuel", "加油", "满到满算油耗"]);
   if (v.has_elec) tiles.push(["charge", "elec", "充电", "支持分两步记"]);
-  tiles.push(["snapshot", "snapshot", "状态快照", "停车前后记一下电量"]);
+  const snapshotHint = v.has_fuel && v.has_elec ? "记录里程、油量和电量" : v.has_fuel ? "记录里程和油表读数" : "停车前后记一下电量";
+  tiles.push(["snapshot", "snapshot", "状态快照", snapshotHint]);
   tiles.push(["expense", "expense", "记费用", "保险、保养、停车、洗车…"]);
   sheet({
     title: "记一笔",

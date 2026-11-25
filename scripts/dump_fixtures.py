@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from secrets import token_urlsafe
+from unittest.mock import patch
 import shutil
 import sys
 import tempfile
@@ -28,7 +30,7 @@ _TMP = tempfile.mkdtemp(prefix="voltane-fixtures-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/fixtures.db"
 os.environ["BACKUP_DIR"] = f"{_TMP}/backups"
 os.environ["DISABLE_JOBS"] = "1"
-os.environ["SECRET_KEY"] = "fixtures-secret-key-0123456789abcdef"
+os.environ["SECRET_KEY"] = token_urlsafe(32)
 os.environ.setdefault("TZ", "Asia/Shanghai")
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -86,14 +88,16 @@ def main() -> None:
     for f in list(out_dir.glob("*.json")) + list(out_dir.glob("*.csv")):
         f.unlink()
 
-    with TestClient(app) as c:
+    admin_password = token_urlsafe(24)
+    stranger_password = token_urlsafe(24)
+    with patch("app.database.DEFAULT_ADMIN", ("admin", admin_password)), TestClient(app) as c:
         seed_demo.main()
-        login = c.post("/api/auth/login", json={"username": "admin", "password": "admin123", "client": "ios"})
+        login = c.post("/api/auth/login", json={"username": "admin", "password": admin_password, "client": "ios"})
         assert login.status_code == 200, login.text
         save("auth_login", "ios", "POST", "/api/auth/login", {"client": "ios"}, login, redact=True)
         d = Dumper(c, login.json()["token"])
 
-        web_login = TestClient(app).post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+        web_login = TestClient(app).post("/api/auth/login", json={"username": "admin", "password": admin_password})
         save("auth_login", "web_no_token", "POST", "/api/auth/login", {"client": "web"}, web_login)
         save("auth_refresh", "ok", "POST", "/api/auth/refresh", None, d.send("POST", "/api/auth/refresh"), redact=True)
 
@@ -110,7 +114,7 @@ def main() -> None:
 
         # 成员、邀请码、其它用户
         member = f"member{uuid.uuid4().hex[:4]}"
-        assert d.send("POST", "/api/admin/users", {"username": member, "password": "secret123", "display_name": "家人"}
+        assert d.send("POST", "/api/admin/users", {"username": member, "password": token_urlsafe(24), "display_name": "家人"}
                       ).status_code == 200
         assert d.send("POST", f"/api/vehicles/{phev}/members", {"username": member, "role": "editor"}).status_code == 200
         inv = d.send("POST", f"/api/vehicles/{phev}/invites", {"role": "viewer", "allow_signup": False, "max_uses": 3}).json()
@@ -247,8 +251,8 @@ def main() -> None:
         errors["401"] = c.get("/api/auth/me")
         errors["401_bad_bearer"] = c.get("/api/auth/me", headers={"Authorization": "Bearer garbage"})
         stranger = f"stranger{uuid.uuid4().hex[:4]}"
-        assert d.send("POST", "/api/admin/users", {"username": stranger, "password": "secret123"}).status_code == 200
-        s_token = c.post("/api/auth/login", json={"username": stranger, "password": "secret123", "client": "ios"}).json()["token"]
+        assert d.send("POST", "/api/admin/users", {"username": stranger, "password": stranger_password}).status_code == 200
+        s_token = c.post("/api/auth/login", json={"username": stranger, "password": stranger_password, "client": "ios"}).json()["token"]
         s_head = {"Authorization": f"Bearer {s_token}"}
         errors["404_no_access"] = c.get(f"/api/vehicles/{phev}", headers=s_head)
         errors["403_not_admin"] = c.get("/api/admin/users", headers=s_head)
@@ -272,8 +276,8 @@ def main() -> None:
 
         # 登录限流放最后，并在结束前解锁
         for _ in range(auth_mod.LOGIN_MAX_FAILURES):
-            c.post("/api/auth/login", json={"username": "admin", "password": "wrong-password", "client": "ios"})
-        limited = c.post("/api/auth/login", json={"username": "admin", "password": "wrong-password", "client": "ios"})
+            c.post("/api/auth/login", json={"username": "admin", "password": token_urlsafe(24), "client": "ios"})
+        limited = c.post("/api/auth/login", json={"username": "admin", "password": token_urlsafe(24), "client": "ios"})
         save("error", "429_login_locked", "POST", "/api/auth/login", None, limited)
         auth_mod.clear_login_failures("testclient")
 

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.access import can_delete_entity, my_vehicle_ids, require_vehicle
 from app.auth import get_current_user
 from app.constants import CATEGORY_TO_TEMPLATES, norm_charge_type, EXPENSE_CATEGORIES, PLACE_KINDS, REMINDER_TEMPLATES, TEMPLATE_BY_KEY
-from app.database import Expense, Place, Record, Reminder, ReminderMute, User, Vehicle, VehicleMember, get_db, localnow, utcnow
+from app.database import AppSetting, Expense, Place, Record, Reminder, ReminderMute, User, Vehicle, VehicleMember, get_db, localnow, utcnow
 from app.engine.aggregate import avg_daily_km, odo_observations
 from app.engine.reminders import ReminderIn, evaluate, next_due
 from app.insights import latest_odo_of
@@ -63,20 +63,40 @@ def _apply_expense(e: Expense, body: ExpenseIn) -> None:
     e.sub_items = json.dumps([s.model_dump() for s in body.sub_items], ensure_ascii=False)
 
 
-def _sync_insurance(db: Session, v: Vehicle, e: Expense, user: User) -> Optional[dict]:
-    """记录保险时，按保险止期自动新建或更新「保险到期」提醒。"""
-    if e.category != "insurance" or not e.period_end:
+def _sync_insurance(db: Session, v: Vehicle, user: User) -> Optional[dict]:
+    """只维护明确由保单生成的提醒，历史补录不覆盖更晚的有效止期。"""
+    key = f"insurance:auto:{v.id}"
+    marker = db.get(AppSetting, key)
+    db.flush()
+    source = db.scalar(select(Expense).where(Expense.vehicle_id == v.id, Expense.deleted_at.is_(None),
+                       Expense.category == "insurance", Expense.period_end.is_not(None))
+                       .order_by(Expense.period_end.desc(), Expense.id.desc()))
+    rem = db.get(Reminder, int(marker.value)) if marker else None
+    if rem and (rem.vehicle_id != v.id or rem.template_key != "insurance"):
         return None
-    rem = db.scalar(select(Reminder).where(Reminder.vehicle_id == v.id, Reminder.template_key == "insurance"))
-    t = TEMPLATE_BY_KEY["insurance"]
     if not rem:
+        if not source or db.scalar(select(Reminder.id).where(Reminder.vehicle_id == v.id,
+                                                             Reminder.template_key == "insurance")):
+            return None
+        t = TEMPLATE_BY_KEY["insurance"]
         rem = Reminder(vehicle_id=v.id, title=t["title"], template_key="insurance", interval_months=12,
                        lead_days=t["lead_days"], created_by=user.id)
         db.add(rem)
-    rem.due_date = e.period_end
-    rem.last_done_at = e.period_start or e.occurred_at.date()
-    rem.is_active = True
-    return {"title": rem.title, "due_date": iso(e.period_end)}
+        db.flush()
+        if marker:
+            marker.value = str(rem.id)
+        else:
+            db.add(AppSetting(key=key, value=str(rem.id)))
+    rem.due_date = source.period_end if source else None
+    rem.last_done_at = (source.period_start or source.occurred_at.date()) if source else None
+    rem.is_active = source is not None
+    return {"title": rem.title, "due_date": iso(rem.due_date)} if source else None
+
+
+def _detach_insurance(db: Session, r: Reminder) -> None:
+    marker = db.get(AppSetting, f"insurance:auto:{r.vehicle_id}")
+    if marker and marker.value == str(r.id):
+        db.delete(marker)
 
 
 def _suggest_complete(db: Session, v: Vehicle, category: str) -> list[dict]:
@@ -94,12 +114,14 @@ def create_expense(body: ExpenseIn, user: User = Depends(get_current_user), db: 
     if body.client_id:
         exist = db.scalar(select(Expense).where(Expense.client_id == body.client_id))
         if exist:
+            if exist.vehicle_id != v.id or exist.created_by != user.id:
+                raise HTTPException(409, "client_id 冲突")
             return {"expense": expense_dict(exist), "replayed": True}
     e = Expense(vehicle_id=v.id, created_by=user.id, updated_by=user.id, client_id=body.client_id)
     _apply_expense(e, body)
     db.add(e)
     db.flush()
-    ins = _sync_insurance(db, v, e, user)
+    ins = _sync_insurance(db, v, user) if e.category == "insurance" else None
     label = EXPENSE_CATEGORIES[e.category]
     log_activity(db, v.id, user, "create", "expense", e.id, f"记了一笔{label} ¥{e.amount_cents / 100:,.2f}")
     db.commit()
@@ -110,7 +132,7 @@ def create_expense(body: ExpenseIn, user: User = Depends(get_current_user), db: 
 @router.get("/expenses/{eid}")
 def get_expense(eid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     e = db.get(Expense, eid)
-    if not e:
+    if not e or e.deleted_at:
         raise HTTPException(404, "费用不存在")
     v, role = require_vehicle(db, user, e.vehicle_id)
     d = expense_dict(e, users_map(db, [e.created_by]))
@@ -127,10 +149,11 @@ def update_expense(eid: int, body: ExpenseIn, user: User = Depends(get_current_u
     v, _ = require_vehicle(db, user, e.vehicle_id, "editor")
     if body.version is not None and body.version != e.version:
         raise HTTPException(409, "这笔费用刚被别人修改过，请刷新后再改")
+    was_insurance = e.category == "insurance"
     _apply_expense(e, body)
     e.version += 1
     e.updated_by = user.id
-    ins = _sync_insurance(db, v, e, user)
+    ins = _sync_insurance(db, v, user) if was_insurance or e.category == "insurance" else None
     log_activity(db, v.id, user, "update", "expense", e.id, f"修改了一笔{EXPENSE_CATEGORIES[e.category]}")
     db.commit()
     return {"expense": expense_dict(e), "insurance_reminder": ins}
@@ -145,6 +168,8 @@ def delete_expense(eid: int, user: User = Depends(get_current_user), db: Session
     if not can_delete_entity(role, user, e.created_by):
         raise HTTPException(403, "只能删除自己记的费用")
     e.deleted_at = utcnow()
+    if e.category == "insurance":
+        _sync_insurance(db, v, user)
     log_activity(db, v.id, user, "delete", "expense", e.id, f"删除了一笔{EXPENSE_CATEGORIES[e.category]}")
     db.commit()
     return {"ok": True}
@@ -159,6 +184,8 @@ def restore_expense(eid: int, user: User = Depends(get_current_user), db: Sessio
     if not can_delete_entity(role, user, e.created_by):
         raise HTTPException(403, "只能恢复自己记的费用")
     e.deleted_at = None
+    if e.category == "insurance":
+        _sync_insurance(db, v, user)
     db.commit()
     return {"ok": True}
 
@@ -281,6 +308,7 @@ def update_reminder(rid: int, body: ReminderBody, user: User = Depends(get_curre
     if not r:
         raise HTTPException(404, "提醒不存在")
     _reminder_access(db, user, r, "editor")
+    _detach_insurance(db, r)
     _apply_reminder(r, body)
     if r.vehicle_id:
         log_activity(db, r.vehicle_id, user, "update", "reminder", r.id, f"修改了提醒「{r.title}」")
@@ -296,6 +324,7 @@ def delete_reminder(rid: int, user: User = Depends(get_current_user), db: Sessio
     _reminder_access(db, user, r, "editor")
     if r.vehicle_id:
         log_activity(db, r.vehicle_id, user, "delete", "reminder", r.id, f"删除了提醒「{r.title}」")
+    _detach_insurance(db, r)
     db.delete(r)
     db.commit()
     return {"ok": True}
@@ -312,6 +341,9 @@ def complete_reminder(rid: int, body: CompleteIn, user: User = Depends(get_curre
     if done_odo is None and r.interval_km and r.vehicle_id:
         # 没填完成时的里程：用车辆最新里程顺延，否则按里程的周期会丢失
         done_odo = _vehicle_context(db, db.get(Vehicle, r.vehicle_id))[0]
+    if done_odo is None and (r.interval_km or (r.due_odometer_km is not None and r.due_date is None)):
+        raise HTTPException(400, "请填写实际完成里程，提醒尚未完成")
+    _detach_insurance(db, r)
     r.last_done_at, r.last_done_odometer_km = body.done_at, done_odo
     nd, no = next_due(ReminderIn(interval_months=r.interval_months, interval_km=r.interval_km), body.done_at, done_odo)
     if nd is None and no is None:
@@ -388,7 +420,7 @@ def place_dict(p: Place) -> dict:
         tariff = json.loads(p.tou_tariff or "[]")
     except ValueError:
         tariff = []
-    return {"id": p.id, "vehicle_id": p.vehicle_id, "shared": p.vehicle_id is not None, "name": p.name,
+    return {"id": p.id, "owner_user_id": p.owner_user_id, "vehicle_id": p.vehicle_id, "shared": p.vehicle_id is not None, "name": p.name,
             "kind": p.kind, "lat": p.lat, "lng": p.lng, "tou_tariff": tariff,
             "default_charge_type": p.default_charge_type, "default_fuel_grade": p.default_fuel_grade,
             "last_unit_price": p.last_unit_price, "sort_order": p.sort_order, "is_hidden": p.is_hidden,
@@ -461,8 +493,22 @@ def update_place(pid: int, body: PlaceIn, user: User = Depends(get_current_user)
     if not p:
         raise HTTPException(404, "地点不存在")
     _place_access(db, user, p)
+    target = p.vehicle_id
+    if "shared" in body.model_fields_set:
+        target = (body.vehicle_id or p.vehicle_id) if body.shared else None
+        if body.shared and target is None:
+            raise HTTPException(400, "请指定共享车辆")
+    changed = target != p.vehicle_id
+    if changed:
+        if p.owner_user_id != user.id:
+            raise HTTPException(403, "只有地点创建者能修改共享范围")
+        if target is not None:
+            require_vehicle(db, user, target, "editor")
+        db.execute(update(Record).where(Record.place_id == p.id).values(place_id=None))
+        p.vehicle_id, p.use_count = target, 0
     _apply_place(p, body)
-    _link_place_records(db, p, user)
+    if not changed:
+        _link_place_records(db, p, user)
     db.commit()
     return place_dict(p)
 

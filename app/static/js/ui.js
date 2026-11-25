@@ -168,10 +168,10 @@ export function avatar(u, cls = "") {
   return raw(`<span class="avatar ${cls}" style="background:${esc(u.color)}" title="${esc(u.name)}">${esc(initial(u.name))}</span>`);
 }
 
-export function qTag(q, err = null) {
-  if (!q || q === "A") return "";
+export function qTag(q, err = null, showGrade = false) {
+  if (!QUALITY_LABEL[q] || (!showGrade && q === "A")) return "";
   const text = q === "B" && err != null ? `估 ±${err}` : QUALITY_LABEL[q];
-  return raw(`<span class="q-tag ${q}">${esc(text)}</span>`);
+  return html`<span class="q-tag ${q}">${showGrade ? q + " · " : ""}${text}</span>`;
 }
 
 export function emptyState({ ico = "info", title = "", text = "", action = "" }) {
@@ -222,6 +222,7 @@ export function setLoading(btn, on) {
 /** 环比的最小基数：上期里程不足 100km 或金额不足 100 元时百分比没有参考意义。 */
 export const MIN_KM = 100;
 export const MIN_CENTS = 10000;
+export const HELP_CPK = "本期成本 ÷ 本期里程。保险按保障天数摊销（未填期间按一年），只计本期应摊部分；本期实付按实际付款计，因此不能直接用实付金额反推每公里成本。";
 
 /** 和上一周期比的变化标签；neutral=true 时不分好坏（如里程）；上期基数小于 min 时不显示。 */
 export function changeTag(cur, prev, { lowerIsBetter = true, neutral = false, digits = 0, min = 0 } = {}) {
@@ -235,8 +236,8 @@ export function changeTag(cur, prev, { lowerIsBetter = true, neutral = false, di
 /* ---------- 问号说明 ---------- */
 
 /** 小问号：桌面悬停、手机点按时弹出说明文字。 */
-export function helpTip(text) {
-  return raw(`<button type="button" class="help-tip" data-help="${esc(text)}" aria-label="说明">?</button>`);
+export function helpTip(text, label = "说明") {
+  return html`<button type="button" class="help-tip" data-help="${text}" aria-label="${label}" aria-expanded="false"><span aria-hidden="true">?</span></button>`;
 }
 
 let helpPop = null;
@@ -245,6 +246,8 @@ let helpPinned = false;
 let helpHover = false;
 let helpY = 0;
 function hideHelp() {
+  helpBtn?.setAttribute("aria-expanded", "false");
+  helpBtn?.removeAttribute("aria-describedby");
   helpPop?.remove();
   helpPop = null;
   helpBtn = null;
@@ -262,6 +265,10 @@ function showHelp(btn, { fromHover = false } = {}) {
   helpPinned = !fromHover;
   helpPop = document.createElement("div");
   helpPop.className = "help-pop";
+  helpPop.id = "active-help-tip";
+  helpPop.setAttribute("role", "tooltip");
+  btn.setAttribute("aria-expanded", "true");
+  btn.setAttribute("aria-describedby", helpPop.id);
   helpPop.textContent = btn.dataset.help;
   document.body.appendChild(helpPop);
   const r = btn.getBoundingClientRect();
@@ -276,7 +283,6 @@ function showHelp(btn, { fromHover = false } = {}) {
 document.addEventListener("click", (e) => {
   const b = e.target.closest?.(".help-tip");
   if (!b) return hideHelp();
-  // 问号可能在链接卡片里，点击只弹说明不跳转
   e.preventDefault();
   e.stopPropagation();
   if (helpPop && helpBtn === b) {
@@ -295,6 +301,9 @@ document.addEventListener("mouseover", (e) => {
 });
 document.addEventListener("mouseout", (e) => {
   if (e.target.closest?.(".help-tip") && matchMedia("(hover: hover)").matches && !helpPinned) hideHelp();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideHelp();
 });
 // 点按时页面可能轻微抖动，滚动超过一点距离才收起
 window.addEventListener("scroll", (e) => {

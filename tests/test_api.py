@@ -1,5 +1,7 @@
 """接口测试：记录、共享权限、向导、提醒、统计在空数据和不完整数据下都不报错。"""
 import io
+from secrets import token_urlsafe
+from tests.auth_data import ADMIN_LOGIN
 import json
 
 from tests.conftest import PHEV
@@ -252,6 +254,106 @@ def test_stats_with_data(vehicle):
     assert cal["report"]["sentence"]
 
 
+def test_cash_stats_without_odometer(vehicle):
+    ts = "2025-09-06T18:00"
+    assert rec(vehicle, occurred_at=ts, kind="charge", charge_kwh=10, amount_cents=2000,
+               extra_fee_cents=500, charge_type="home", place_name="家充").status_code == 200
+    params = {"vehicle_id": vehicle.vid}
+    overview = vehicle.get("/api/stats/overview", params={**params, "range": "all"}).json()
+    assert overview["range"]["from"] == ts[:10]
+    assert overview["record_count"] == 1 and overview["latest_odo"] is None
+    month = vehicle.get("/api/stats/monthly-report", params={**params, "month": "2025-09"}).json()
+    assert "里程未知" in month["sentence"]
+    for report in (month["report"], overview["period"]):
+        assert (report["elec_count"], report["elec_kwh"], report["home_share"]) == (1, 10, 1)
+        assert (report["elec_cents"], report["other_cents"], report["total_cents"]) == (2000, 500, 2500)
+        assert report["energy_cost_per_km"] is None and report["total_cost_per_km"] is None
+    assert vehicle.post("/api/expenses", json={**params, "category": "parking", "occurred_at": ts,
+                                               "amount_cents": 2000}).status_code == 200
+    cost = vehicle.get("/api/stats/cost", params={**params, "date_to": "2025-09-30"}).json()
+    assert cost["total_cents"] == cost["amortized_cents"] == cost["months"][0]["total"] == 4500
+    assert cost["cost_per_km"] is None and cost["months"][0]["cost_per_km"] is None
+    amounts = {c["key"]: (c["cents"], c["count"]) for c in cost["categories"]}
+    assert amounts == {"elec": (2000, 1), "parking": (2500, 2)}
+    day = vehicle.get("/api/stats/calendar", params={**params, "month": "2025-09"}).json()["days"][ts[:10]]
+    assert day["cents"] == 4500
+    assert cost["places"][0]["count"] == 1 and cost["prices"]["elec"][0]["price"] == 2
+    energy = vehicle.get("/api/stats/energy", params=params).json()
+    assert energy["charging"]["types"] == [{"type": "home", "count": 1, "kwh": 10, "cents": 2000, "avg_price": 2}]
+    assert 2025 in vehicle.get("/api/stats/yearly-report", params={**params, "year": 2026}).json()["years"]
+
+
+def test_overview_distinguishes_missing_quantity_cost_and_mileage(vehicle):
+    params = {"vehicle_id": vehicle.vid, "range": "all"}
+    for day in (1, 2):
+        assert rec(vehicle, kind="charge", occurred_at=f"2026-09-0{day}T08:00").status_code == 200
+    assert rec(vehicle, kind="snapshot", odometer_km=100).status_code == 200
+    overview = vehicle.get("/api/stats/overview", params=params).json()
+    p = overview["period"]
+    assert (p["elec_count"], p["elec_kwh"], p["energy_cents"]) == (2, 0, 0)
+    assert (p["fuel_qty_missing"], p["elec_qty_missing"], p["energy_cost_missing"]) == (0, 2, 2)
+    assert p["mileage"] == 0 and not p["mileage_known"]
+    assert not overview["history"]["mileage_known"] and overview["history"]["energy_cost_missing"] == 2
+    assert rec(vehicle, kind="charge", charge_kwh=0, amount_cents=0, occurred_at="2026-09-03T08:00").status_code == 200
+    assert rec(vehicle, fuel_unit_price=7.5, amount_cents=7500, estimated_fields=["paid_cents"],
+               occurred_at="2026-09-04T08:00").status_code == 200
+    assert rec(vehicle, kind="snapshot", odometer_km=100, occurred_at="2026-09-05T08:00").status_code == 200
+    assert rec(vehicle, kind="charge", status="in_progress", occurred_at="2026-09-06T08:00").status_code == 200
+    month = vehicle.get("/api/stats/monthly-report", params={"vehicle_id": vehicle.vid, "month": "2026-09"}).json()
+    p = month["report"]
+    assert (p["fuel_qty_missing"], p["elec_qty_missing"], p["energy_cost_missing"]) == (1, 2, 2)
+    assert (p["elec_count"], p["energy_cents"]) == (3, 7500)
+    assert p["mileage_known"] and p["mileage"] == 0
+    prev = month["prev"]
+    assert not prev["mileage_known"] and prev["energy_cost_missing"] == prev["elec_qty_missing"] == 0
+
+
+def test_mileage_known_requires_an_independent_baseline(vehicle):
+    assert rec(vehicle, kind="snapshot", odometer_km=100).status_code == 200
+    for initial, expected, km in [(100, False, 0), (110, False, 0), (80, True, 20)]:
+        r = vehicle.put(f"/api/vehicles/{vehicle.vid}", json={**PHEV, "initial_odometer_km": initial})
+        assert r.status_code == 200
+        month = vehicle.get("/api/stats/monthly-report", params={"vehicle_id": vehicle.vid, "month": "2026-09"}).json()
+        assert month["report"]["mileage_known"] is expected and month["report"]["mileage"] == km
+        assert not month["prev"]["mileage_known"]
+
+
+def test_cash_stats_fleet_does_not_use_another_vehicles_mileage(vehicle):
+    assert rec(vehicle, fuel_liters=10, amount_cents=7500).status_code == 200
+    other = vehicle.post("/api/vehicles", json={**PHEV, "name": "另一辆车"}).json()["id"]
+    for day, odo in [(1, 100), (2, 200)]:
+        assert rec(vehicle, vehicle_id=other, kind="snapshot", occurred_at=f"2026-09-0{day}T08:00",
+                   odometer_km=odo).status_code == 200
+    params = {"date_from": "2026-09-01", "date_to": "2026-09-30"}
+    fleet = vehicle.get("/api/stats/cost", params=params).json()
+    assert fleet["total_cents"] == 7500 and fleet["mileage"] == 100
+    assert fleet["cost_per_km"] is None and fleet["months"][0]["cost_per_km"] is None
+    for day in (1, 2):
+        assert rec(vehicle, kind="snapshot", occurred_at=f"2026-09-0{day}T09:00", odometer_km=500).status_code == 200
+    parked = vehicle.get("/api/stats/cost", params=params).json()
+    assert parked["cost_per_km"] == parked["months"][0]["cost_per_km"] == 0.75
+
+
+def test_cash_stats_use_done_records_and_only_summary_difference(vehicle):
+    params = {"vehicle_id": vehicle.vid}
+    assert rec(vehicle, fuel_liters=10, amount_cents=7500).status_code == 200
+    pending = rec(vehicle, kind="charge", status="in_progress", occurred_at="2026-09-02T12:00",
+                  charge_kwh=20, amount_cents=10000, extra_fee_cents=500).json()["record"]
+    deleted = rec(vehicle, occurred_at="2026-09-03T12:00", fuel_liters=30, amount_cents=22000).json()["record"]
+    assert vehicle.delete(f"/api/records/{deleted['id']}").status_code == 200
+    assert vehicle.post("/api/summaries", json={**params, "start_date": "2026-09-01", "end_date": "2026-09-30",
+                                                "mode": "total", "fuel_liters": 20, "fuel_cents": 15000}).status_code == 200
+    overview = vehicle.get("/api/stats/overview", params={**params, "range": "all"}).json()
+    assert overview["record_count"] == 1 and [r["id"] for r in overview["in_progress"]] == [pending["id"]]
+    report = vehicle.get("/api/stats/monthly-report", params={**params, "month": "2026-09"}).json()["report"]
+    assert (report["total_cents"], report["summary_cents"], report["fuel_l"]) == (15000, 7500, 20)
+    assert (report["fuel_count"], report["elec_count"]) == (1, 0)
+    day = vehicle.get("/api/stats/calendar", params={**params, "month": "2026-09"}).json()["days"]["2026-09-02"]
+    assert day["cents"] == 0 and day["items"][0]["id"] == pending["id"]
+    yearly = vehicle.get("/api/stats/yearly-report", params={**params, "year": 2026}).json()
+    assert yearly["top_item"]["amount_cents"] == 7500
+
+
 def test_segment_mark_and_missed_fix(make_user):
     c = make_user()
     c.vid = c.post("/api/vehicles", json={"name": "Y", "energy_type": "bev", "battery_kwh": 60,
@@ -312,7 +414,7 @@ def test_signup_requires_setting(admin, vehicle):
     from app.main import app
 
     anon = TestClient(app)
-    body = {"code": inv["code"], "username": "newbie1", "password": "secret123"}
+    body = {"code": inv["code"], "username": "newbie1", "password": token_urlsafe(24)}
     assert anon.post("/api/auth/signup", json=body).status_code == 403
     admin.put("/api/admin/settings", json={"allow_signup": True})
     assert anon.get(f"/api/invites/{inv['code']}").json()["allow_signup"] is True
@@ -332,7 +434,7 @@ def test_login_reports_cookie_secure_flag(_app):
     from fastapi.testclient import TestClient
     from app.main import app
 
-    r = TestClient(app).post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    r = TestClient(app).post("/api/auth/login", json={"username": "admin", "password": ADMIN_LOGIN[1]})
     assert r.json()["cookie_secure"] is False
 
 

@@ -6,7 +6,7 @@ import { listen, openQuickAdd, resetView, setAside, setNav, setTitle, view } fro
 import { canEdit, currentVehicle, emit, pref, savePref, state } from "./state.js";
 import { bindRows, itemRow, openDetail } from "./records.js";
 import { reminderRow } from "./reminders.js";
-import { MIN_CENTS, MIN_KM, avatar, bindSegmented, changeTag, emptyState, helpTip, qTag, skeleton, toast, toastError } from "./ui.js";
+import { HELP_CPK, MIN_CENTS, MIN_KM, avatar, bindSegmented, changeTag, emptyState, helpTip, qTag, skeleton, toast, toastError } from "./ui.js";
 import { $, $$, ago, api, durationText, esc, fixed, fmtDate, html, km, money, num, parseLocal, raw } from "./util.js";
 
 const RANGES = [["month", "本月"], ["30d", "近30天"], ["year", "今年"], ["all", "全部"]];
@@ -15,6 +15,7 @@ let costData = null;
 const HINT = {
   need_start: "还没有记录：先记一条「状态快照」或一次「加满」作为起点",
   need_full: "下次加油建议加满，之后油耗就准了",
+  below_gauge_resolution: "油量变化低于油表分辨率，暂不显示油耗",
   need_second_full: "再加满一次，就能算出第一段准确油耗",
   need_soc: "充电时填一下开始和结束电量，电耗会更准",
   need_more: "再多记几次就有结果了",
@@ -58,9 +59,12 @@ function render(el, v, d, reload) {
   const p = d.period;
   const prev = d.prev;
   costData = { p, prev };
-  // 上期里程太少时每公里成本的环比没有参考意义
-  const prevCpk = (k) => (prev && prev.mileage >= MIN_KM ? prev[k] : null);
+  const mileage = p.mileage_known === false ? null : p.mileage;
+  const prevMileage = prev?.mileage_known === false ? null : prev?.mileage;
   const editable = canEdit(v);
+  const pending = pendingCard(d.pending, editable);
+  const reminders = remindersCard(d.reminders);
+  const history = historyCard(v, d.history);
   el.innerHTML = String(html`
     ${d.in_progress.map((r) => chargingCard(r))}
     <div class="home-grid">
@@ -70,20 +74,16 @@ function render(el, v, d, reload) {
           <div class="segmented range-seg" id="range-seg">${RANGES.map(([k, l]) => html`<button data-v="${k}" class="${k === d.range.key ? "on" : ""}">${l}</button>`)}</div>
         </div>
         <div class="kpi-grid">
-          ${kpi("里程", km(p.mileage), "km", changeTag(p.mileage, prev?.mileage, { neutral: true, min: MIN_KM }), "road")}
+          ${kpi("里程", mileage == null ? "—" : km(mileage), mileage == null ? "" : "km", changeTag(mileage, prevMileage, { neutral: true, min: MIN_KM }), "road", mileage == null ? "里程数据不足" : "")}
           <div id="home-cost-card">${costCard(p, prev)}</div>
-          ${v.has_fuel ? kpi("加油", num(p.fuel_l, 1), "L", raw(`<span class="tiny muted">${p.fuel_count} 次 · ${money(p.fuel_cents)}</span>`), "fuel", "", "fuel") : ""}
-          ${v.has_elec ? kpi("充电", num(p.elec_kwh, 0), "kWh", raw(`<span class="tiny muted">${p.elec_count} 次${p.home_share != null ? ` · 家充 ${num(p.home_share * 100, 0)}%` : ""}</span>`), "bolt", "", "elec") : ""}
-          ${kpi("每公里补能支出", p.energy_cost_per_km != null ? "¥" + fixed(p.energy_cost_per_km) : "–", "", changeTag(p.energy_cost_per_km, prevCpk("energy_cost_per_km")), "coin")}
-          ${kpi("每公里总成本", p.total_cost_per_km != null ? "¥" + fixed(p.total_cost_per_km) : "–", "", changeTag(p.total_cost_per_km, prevCpk("total_cost_per_km")), "receipt", "", "", HELP_CPK)}
+          ${v.has_fuel ? quantityCard(p, "fuel") : ""}
+          ${v.has_elec ? quantityCard(p, "elec") : ""}
+          ${perKmCard(p, prev, true)}
+          ${perKmCard(p, prev, false)}
         </div>
         ${editable ? quickRow(v) : ""}
       </div>
-      <div class="home-side stack">
-        ${pendingCard(d.pending, editable)}
-        ${remindersCard(d.reminders)}
-        ${historyCard(v, d.history)}
-      </div>
+      ${pending || reminders || history ? html`<div class="home-side stack">${pending}${reminders}${history}</div>` : ""}
     </div>
     <div class="section-title"><span>最近记录</span><a data-link href="/records" class="link-btn">全部</a></div>
     ${d.recent.length ? html`<div class="card flush list" id="recent">${d.recent.map((it) => itemRow(it))}</div>`
@@ -128,15 +128,50 @@ function chargingCard(r) {
     <button class="btn btn-sm" data-finish="${r.id}">结束充电</button></div>`;
 }
 
-const HELP_CPK = "花费 ÷ 里程。保险按保险期间（没填就按一年）按天摊销，只算落在这段时间里的部分；「总花费」仍按实际付款计。";
-const HELP_EQUIV = "油和电取同一区间：油耗 + 电耗 ÷ 8.9（1 L 汽油约等于 8.9 kWh 电）就是折合油耗，能直接和燃油车比较。";
+function quantityCard(p, energy) {
+  const fuel = energy === "fuel";
+  const count = p[energy + "_count"] ?? 0;
+  const missing = p[energy + "_qty_missing"] ?? 0;
+  const amount = fuel ? p.fuel_l : p.elec_kwh;
+  const known = amount != null && (count > missing || amount > 0);
+  const foot = [`${count} 次`];
+  if (missing) foot.push(`${known ? "已知小计，" : ""}${missing} 笔未填${fuel ? "油量" : "电量"}`);
+  if (fuel && count && !p.energy_cost_missing) foot.push(money(p.fuel_cents));
+  if (!fuel && p.home_share != null && !missing) foot.push(`家充 ${num(p.home_share * 100, 0)}%`);
+  return kpi(fuel ? "加油" : "充电", known ? num(amount, 2) : missing ? "未填" : "—", known ? (fuel ? "L" : "kWh") : "", "",
+    fuel ? "fuel" : "bolt", foot.join(" · "), energy);
+}
+
+function perKmCard(p, prev, energyOnly) {
+  const key = energyOnly ? "energy_cost_per_km" : "total_cost_per_km";
+  const costMissing = p.energy_cost_missing ?? 0;
+  const value = p.mileage_known === false || costMissing ? null : p[key];
+  const comparable = prev && prev.mileage_known !== false && prev.mileage >= MIN_KM && !prev.energy_cost_missing;
+  return kpi(energyOnly ? "每公里补能支出" : "每公里成本（含摊销）", value == null ? "—" : "¥" + fixed(value), "",
+    changeTag(value, comparable ? prev[key] : null), energyOnly ? "coin" : "receipt",
+    costMissing ? `${costMissing} 笔补能金额未填` : "", "", energyOnly ? "" : HELP_CPK);
+}
 
 function costCard(p, prev) {
   const energyOnly = pref("home_cost_scope", "all") === "energy";
   const key = energyOnly ? "energy_cents" : "total_cents";
-  return kpi(energyOnly ? "油电花费" : "总花费", money(p[key], { digits: p[key] >= 1000000 ? 0 : 2 }), "",
-    changeTag(p[key], prev?.[key], { min: MIN_CENTS }), "wallet", p.summary_cents ? "含汇总分摊" : "", "", "",
-    html`<button type="button" class="cost-scope-toggle" aria-label="${energyOnly ? "切换为全部花费" : "切换为油电花费"}" ${costScopeSaving ? "disabled" : ""}>切换</button>`);
+  const missing = p.energy_cost_missing ?? 0;
+  const count = (p.fuel_count ?? 0) + (p.elec_count ?? 0);
+  const amount = p[key];
+  const parts = [];
+  let value = money(amount, { digits: amount >= 1000000 ? 0 : 2 });
+  if (missing) {
+    if (amount) parts.push("已知小计");
+    else if (count > missing) {
+      value = "待补全";
+      parts.push("已填补能金额均为零");
+    } else value = "未填";
+    parts.push(`${missing} 笔补能金额未填`);
+  } else if (!count && !amount) value = "—";
+  if (p.summary_cents) parts.push("含汇总分摊");
+  return kpi(energyOnly ? "本期油电实付" : "本期实付", value, "",
+    !missing && !prev?.energy_cost_missing && value !== "—" ? changeTag(amount, prev?.[key], { min: MIN_CENTS }) : "", "wallet", parts.join(" · "), "", "",
+    html`<button type="button" class="cost-scope-toggle" aria-label="${energyOnly ? "切换为本期实付" : "切换为本期油电实付"}" ${costScopeSaving ? "disabled" : ""}>切换</button>`);
 }
 
 function bindCostCard(el) {
@@ -172,7 +207,7 @@ function updateCostCard(el) {
 
 function kpi(label, value, unit, delta, ico, sub = "", tone = "", help = "", action = "") {
   return html`<div class="kpi card ${tone}">
-    <div class="kpi-label">${raw(icon(ico, 16))}${label}${help ? helpTip(help) : ""}${action}</div>
+    <div class="kpi-label">${raw(icon(ico, 16))}${label}${help ? helpTip(help, label + "说明") : ""}${action}</div>
     <div class="kpi-value num">${value}<small>${unit}</small></div>
     <div class="kpi-foot">${delta || ""}${sub ? html`<span class="tiny muted">${sub}</span>` : ""}</div></div>`;
 }
@@ -188,24 +223,29 @@ function quickRow(v) {
 
 /* ---------- 最近能耗 ---------- */
 
-function bigNum(value, unit, tone, q, err) {
+function bigNum(value, label, unit, tone, quality) {
   const ico = { fuel: "fuel", elec: "bolt", combined: "gauge" }[tone];
-  const sub = tone === "combined" ? "折合<br>" + unit : unit + "<br>/100km";
-  return html`<div class="big ${tone}"><span class="big-ico">${raw(icon(ico, 18))}</span>
-    <span class="big-val num">${value != null ? num(value) : "–"}</span><span class="big-unit">${raw(sub)}</span>${qTag(q, err)}</div>`;
+  return html`<div class="big ${tone}"><div class="big-label">${raw(icon(ico, 16))}${label} ${qTag(quality, null, true)}</div>
+    <div class="big-reading"><b class="big-val num">${num(value)}</b><small class="big-unit">${unit}/100km</small></div></div>`;
 }
 
 function scopeText(x) {
-  if (!x) return "";
-  if (x.quality === "A") return x.segments > 1 ? `最近 ${x.segments} 段 · ${km(x.distance)}km` : `最近一段 · ${km(x.distance)}km`;
-  if (x.quality === "B") return `估算 · ${km(x.distance)}km`;
-  if (x.quality === "C") return `粗略 · ${x.scope === "delivery" ? "提车至今" : "记账以来"} ${km(x.distance)}km`;
-  return "";
+  if (!x || x.quality === "D") return "";
+  const start = x.start_ts || x.from_ts;
+  const end = x.end_ts || x.to_ts;
+  const scope = x.scope === "delivery" ? "自提车记录起" : x.scope === "ledger" ? "自记账起点起"
+    : x.segments > 1 ? `最近 ${x.segments} 个 A 级段（按里程加权）` : x.anchor === "full" ? "满到满" : x.anchor === "gauge" ? "油表区间" : "最近可用段";
+  return [scope, start && !(x.segments > 1) && fmtDate(start) + " 起",
+    end && "截至 " + fmtDate(end), x.distance != null && "覆盖 " + km(x.distance) + " km"].filter(Boolean).join(" · ");
 }
 
-function rangeText(x) {
-  if (x?.quality === "C" && x.low100 != null) return `约 ${num(x.low100)}–${num(x.high100)}`;
-  return "";
+function rangeText(x, unit) {
+  if (x.low100 != null && x.high100 != null) return `估算范围 ${num(x.low100)}–${num(x.high100)} ${unit}/100km`;
+  return x.err100 != null ? `误差约 ±${num(x.err100)} ${unit}/100km` : "";
+}
+
+function componentMetric(label, value, unit, tone = "") {
+  return html`<div><span class="tiny muted">${label}</span><b class="num ${tone}">${num(value)}<small>${unit}</small></b></div>`;
 }
 
 function heroCard(v, d) {
@@ -215,81 +255,69 @@ function heroCard(v, d) {
   let foot = [];
   let hint = null;
   let hintKind = null;
-  if (v.has_fuel && v.has_elec) {
-    const c = L.combined;
-    if (c && c.per100 != null) {
-      // 油电同一区间，主数字是折合油耗
-      const range = c.low100 != null ? ` (${num(c.low100)}–${num(c.high100)})` : "";
-      body = html`<div class="big-pair">${bigNum(c.equiv_per100, "L/100km", "combined", c.quality)}
-        <div class="big-side"><div><span class="muted tiny">油</span><b class="num fuel-c">${num(c.per100)}<small>L/100km${range}</small></b></div>
-          <div><span class="muted tiny">电</span><b class="num elec-c">${c.elec_per100 != null ? num(c.elec_per100) : "–"}<small>kWh/100km</small></b></div></div></div>`;
-      foot = [
-        c.cost_per_km != null && html`<span><b class="num">¥${fixed(c.cost_per_km)}</b>/km</span>`,
-        c.elec_share != null && html`<span>电能 <b class="num">${num(c.elec_share * 100, 0)}%</b></span>`,
-        html`<span class="tiny muted">区间里程 ${km(c.distance)} km${helpTip(HELP_EQUIV)}</span>`,
-      ];
-      d._scope = c.scope === "segment"
-        ? `${c.start_ts ? fmtDate(c.start_ts) + " → " : ""}${fmtDate(c.end_ts)} · ${c.anchor === "full" ? "满到满精算" : "按油表估算"}`
-        : `粗略 · ${c.scope === "delivery" ? "提车至今" : "记账以来"}`;
-      const f = L.fuel;
-      if (c.quality === "C" && f?.hint) {
-        hint = HINT[f.hint];
-        hintKind = "fuel";
-      }
-    } else {
-      const f = L.fuel;
-      const e = L.elec;
-      body = html`<div class="big-pair">${bigNum(f.per100, "L", "fuel", f.quality, f.err100)}${bigNum(e.per100, "kWh", "elec", e.quality, e.err100)}</div>`;
-      foot = [
-        f.per100 != null && html`<span class="tiny">油：${scopeText(f)} ${rangeText(f)}</span>`,
-        e.per100 != null && html`<span class="tiny">电：${scopeText(e)}</span>`,
-      ];
-      if (f.hint && (f.quality === "C" || f.quality === "D")) {
-        hint = HINT[f.hint];
-        hintKind = "fuel";
-      } else if (e.hint && e.quality === "D") {
-        hint = HINT[e.hint];
-        hintKind = "charge";
-      }
-    }
-  } else if (v.has_elec) {
-    const e = L.elec;
-    const t = L.elec_totals;
-    body = html`<div class="big-pair">${bigNum(e.per100, "kWh", "elec", e.quality, e.err100)}
-      ${t?.overall ? html`<div class="big-side"><div><span class="muted tiny">本期行驶</span><b class="num">${t.drive ? num(t.drive.per100) : "–"}<small>kWh/100km</small></b></div>
-        <div><span class="muted tiny">含静置</span><b class="num">${num(t.overall.per100)}<small>kWh/100km</small></b></div>
-        ${t.idle ? html`<div><span class="muted tiny">静置</span><b class="num">${num(t.idle.amount, 1)}<small>kWh</small></b></div>` : ""}</div>` : ""}</div>`;
-    foot = [scopeText(e) && html`<span class="tiny">${scopeText(e)}</span>`, e.cost_per_km != null && html`<span><b class="num">¥${fixed(e.cost_per_km)}</b>/km</span>`];
-    if (e.quality === "D") {
-      hint = HINT[e.hint];
-      hintKind = "charge";
-    }
+  const hybrid = v.has_fuel && v.has_elec;
+  const c = hybrid && L.combined;
+  const paired = c && c.equiv_per100 != null;
+  const sources = [["fuel", "油耗", "L"], ["elec", "电耗", "kWh"]].filter(([key]) => v["has_" + key]);
+  if (paired) {
+    const factor = v.calc_settings?.kwh_per_l ?? 8.9;
+    body = html`<div class="big-pair">${bigNum(c.equiv_per100, "折合油耗", "L", "combined", c.quality)}
+      <div class="big-side">${componentMetric("同区间油耗", c.per100, "L/100km", "fuel-c")}
+        ${componentMetric("同区间电耗", c.elec_per100, "kWh/100km", "elec-c")}</div></div>
+      <p class="hero-scope">${scopeText(c)} ${helpTip(`同一区间内，折合油耗 = 油耗 + 电耗 ÷ ${factor}。当前车辆按 1 L 汽油折合 ${factor} kWh 计算。`, "折合油耗说明")}</p>`;
+    const oilRange = rangeText(c, "L");
+    foot = [oilRange && `油耗${oilRange}`, c.elec_share != null && `电能占比 ${num(c.elec_share * 100, 0)}%`,
+      c.cost_per_km != null && `区间补能成本 ¥${fixed(c.cost_per_km)}/km`];
   } else {
-    const f = L.fuel;
-    body = html`<div class="big-pair">${bigNum(f.per100, "L", "fuel", f.quality, f.err100)}</div>`;
-    foot = [scopeText(f) && html`<span class="tiny">${scopeText(f)} ${rangeText(f)}</span>`, f.cost_per_km != null && html`<span><b class="num">¥${fixed(f.cost_per_km)}</b>/km</span>`];
-    if (f.quality === "D" || f.quality === "C") {
-      hint = HINT[f.hint];
-      hintKind = "fuel";
+    body = html`<div class="big-pair">${sources.map(([key, label, unit]) => {
+      const x = L[key];
+      const scope = scopeText(x);
+      const range = rangeText(x, unit);
+      return html`<div>${bigNum(x.per100, label, unit, key, x.quality)}
+        ${scope ? html`<p class="hero-scope">${scope}</p>` : ""}
+        ${range ? html`<p class="hero-scope">${range}</p>` : ""}</div>`;
+    })}</div>`;
+    if (hybrid) foot.push("油电各取各自的可用区间，不作折合");
+    else {
+      const x = L[sources[0][0]];
+      if (x.cost_per_km != null) foot.push(`区间补能成本 ¥${fixed(x.cost_per_km)}/km`);
     }
   }
-  const sparks = [["fuel", "油耗"], ["elec", "电耗"]]
-    .filter(([key]) => d.spark[key].length > 1)
-    .map(([key, label]) => html`<div class="hero-spark">
-      <span class="tiny muted"><i class="lg-dot ${key}"></i>${label}</span>
-      ${raw(sparkline(d.spark[key].map((x) => x.per100), {
-        color: key, w: 240, hollow: d.spark[key].map((x) => x.quality !== "A"),
-      }))}
-    </div>`);
+  for (const [key] of sources) {
+    const x = L[key];
+    if ((!paired || c.quality === "C") && ["C", "D"].includes(x.quality) && HINT[x.hint]) {
+      hint = HINT[x.hint];
+      hintKind = key === "fuel" ? "fuel" : "charge";
+      break;
+    }
+  }
+  const t = !hybrid && v.has_elec && L.elec_totals;
+  const sparks = sources.flatMap(([key, label]) => {
+    const pts = (d.spark[key] || []).filter((x) => x.per100 != null);
+    if (pts.length < 2) return [];
+    return html`<div class="hero-spark"><span class="tiny"><i class="lg-dot ${key}"></i>${label}趋势 · 最近 ${pts.length} 段</span>
+      ${raw(sparkline(pts.map((x) => x.per100), { color: key, w: 240, hollow: pts.map((x) => x.quality !== "A") }))}</div>`;
+  });
+  const available = sources.filter(([key]) => L[key].per100 != null);
+  let title;
+  if (paired) title = c.scope === "segment" ? "最近可算的油电综合段" : "油电综合粗估";
+  else if (!available.length) title = "能耗数据不足";
+  else if (available.length > 1) title = "油耗与电耗（分开计算）";
+  else {
+    const [key, label] = available[0];
+    title = L[key].quality === "C" ? `${label}粗估` : `最近可算的${label}`;
+  }
   const slf = d.since_last_full;
-  return html`<a class="card hero" data-link href="/stats/energy">
-    <div class="row between"><span class="card-title">最近能耗</span><span class="tiny muted">${d._scope || ""}</span></div>
+  return html`<section class="card hero">
+    <div class="row between"><span class="card-title">${title}</span><a class="hero-link" data-link href="/stats/energy">能耗详情 ›</a></div>
     ${body}
-    <div class="hero-foot">${foot.filter(Boolean)}</div>
-    ${sparks.length ? html`<div class="hero-trends"><span class="tiny muted">近 10 段趋势</span>
-      <div class="hero-sparks">${sparks}</div></div>` : ""}
+    ${foot.some(Boolean) ? html`<div class="hero-foot">${foot.filter(Boolean).map((s) => html`<span>${s}</span>`)}</div>` : ""}
+    ${t && (t.overall || t.drive || t.idle) ? html`<div class="hero-period"><p class="tiny muted">所选时段 · ${fmtDate(d.range.from)} 至 ${fmtDate(d.range.to)}</p><div class="big-side">
+      ${componentMetric("行驶电耗", t.drive?.per100, "kWh/100km")}${componentMetric("综合电耗（含静置）", t.overall?.per100, "kWh/100km")}
+      ${t.idle ? componentMetric("静置耗电", t.idle.amount, "kWh") : ""}</div></div>` : ""}
+    ${sparks.length ? html`<div class="hero-sparks">${sparks}</div>` : ""}
     ${slf && slf.km > 0 ? html`<div class="tiny muted">距上次加满已行驶 ${km(slf.km)} km</div>` : ""}
-  </a>
+  </section>
   ${hint ? html`<div class="callout ${hintKind === "fuel" ? "fuel" : "elec"}">${raw(icon("sparkle", 18))}<span class="grow">${hint}</span>
     ${editable && hintKind ? html`<button class="btn btn-sm ${hintKind === "fuel" ? "btn-fuel" : "btn-elec"}" data-hero-action="${hintKind}">${hintKind === "fuel" ? "记加油" : "记充电"}</button>` : ""}</div>` : ""}`;
 }
@@ -340,15 +368,16 @@ function remindersCard(list) {
 function historyCard(v, h) {
   if (!h || pref("hide_history", false) || h.days < 30) return "";
   const rows = [];
-  if (h.fuel) rows.push(html`<div><span class="muted tiny">平均油耗</span><b class="num fuel-c">${num(h.fuel.per100)}</b><small>L/100km${h.fuel.low100 != null ? ` (${num(h.fuel.low100)}–${num(h.fuel.high100)})` : ""}</small></div>`);
+  if (h.fuel) rows.push(html`<div><span class="muted tiny">平均油耗</span><b class="num fuel-c">${num(h.fuel.per100)}</b><small>${h.fuel.below_resolution ? "低于油表分辨率" : `L/100km${h.fuel.low100 != null ? ` (${num(h.fuel.low100)}–${num(h.fuel.high100)})` : ""}`}</small></div>`);
   if (h.elec) rows.push(html`<div><span class="muted tiny">平均电耗</span><b class="num elec-c">${num(h.elec.per100)}</b><small>kWh/100km</small></div>`);
   return html`<div class="card history" id="history-card">
     <div class="card-head"><span class="card-title">${raw(icon("history", 18))}${h.scope === "delivery" ? "提车至今" : "记账以来"}</span>
       <span class="row">${h.has_summary ? html`<span class="badge">含历史汇总</span>` : ""}<button class="icon-btn" id="history-hide" aria-label="隐藏" style="width:28px;height:28px">${raw(icon("x", 14))}</button></span></div>
     <div class="history-grid">
-      <div class="span-2"><span class="muted tiny">累计里程（${h.days} 天）</span><b class="num">${km(h.mileage)} <small>km</small></b></div>
-      <div><span class="muted tiny">总花费</span><b class="num">${money(h.total_cents, { digits: 0 })}</b></div>
-      <div><span class="muted tiny">每公里总成本</span><b class="num">${h.total_cost_per_km != null ? "¥" + fixed(h.total_cost_per_km) : "–"}</b></div>
+      <div class="span-2"><span class="muted tiny">累计里程（${h.days} 天）</span><b class="num">${h.mileage_known === false ? "—" : html`${km(h.mileage)} <small>km</small>`}</b></div>
+      <div><span class="muted tiny">累计实付</span><b class="num">${h.energy_cost_missing && !h.total_cents ? "—" : money(h.total_cents)}</b>
+        ${h.energy_cost_missing ? html`<small>${h.total_cents ? "已知小计，" : ""}${h.energy_cost_missing} 笔补能金额未填</small>` : ""}</div>
+      <div><span class="muted tiny">每公里成本（含摊销）</span><b class="num">${h.mileage_known !== false && !h.energy_cost_missing && h.total_cost_per_km != null ? "¥" + fixed(h.total_cost_per_km) : "—"}</b></div>
       ${rows}
     </div>
     ${h.summary_before_cents ? html`<p class="tiny muted">另有记账前的历史汇总 ${money(h.summary_before_cents, { digits: 0 })}，那段里程未知，没有计入每公里成本</p>` : ""}
@@ -360,10 +389,9 @@ async function renderAside(v) {
   if (window.innerWidth < 1280) return;
   try {
     const acts = await api(`/api/vehicles/${v.id}/activity?limit=12`);
-    if (location.pathname !== "/") return;
-    setAside(html`<div class="aside-title">最近动态</div>
-      ${acts.length ? html`<div class="activity">${acts.map((a) => html`<div class="act-item">${avatar(a.user, "sm")}<div class="grow"><div class="small">${a.summary}</div><div class="tiny muted">${a.user?.name || ""} · ${ago(a.created_at)}</div></div></div>`)}</div>`
-        : html`<p class="muted small">还没有动态</p>`}`);
+    if (location.pathname !== "/" || currentVehicle()?.id !== v.id) return;
+    setAside(acts.length ? html`<div class="aside-title">最近动态</div>
+      <div class="activity">${acts.map((a) => html`<div class="act-item">${avatar(a.user, "sm")}<div class="grow"><div class="small">${a.summary}</div><div class="tiny muted">${a.user?.name || ""} · ${ago(a.created_at)}</div></div></div>`)}</div>` : null);
   } catch {
     /* 右侧栏失败不影响首页 */
   }

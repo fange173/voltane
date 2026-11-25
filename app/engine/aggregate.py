@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from app.engine.ledger import EST_QTY_ERR, Ledger, raw_added
+from app.engine.ledger import COMBINED_SOC_ERR_PCT, EST_QTY_ERR, MAX_REL_ERR, Ledger, is_energy_rec, point_added
 from app.engine.types import Segment, worse
 
 # 粗略口径至少需要的里程
@@ -79,15 +79,24 @@ def mileage(obs: list[tuple], d0: date, d1: date, initial_odo: Optional[float] =
     return round(max(_odo_at(mono, t1, initial_odo) - _odo_at(mono, t0, initial_odo), 0.0), 1)
 
 
+def mileage_known(obs: list[tuple], d0: date, d1: date, initial_odo=None) -> bool:
+    """周期与两个实测时点之间有交集，或首个读数在期内且比独立初始里程大。"""
+    if not obs:
+        return False
+    first, last = obs[0][0], obs[-1][0]
+    lo = datetime.combine(d0, datetime.min.time())
+    hi = datetime.combine(d1 + timedelta(days=1), datetime.min.time())
+    return (max(lo, first) < min(hi, last)
+            or (initial_odo is not None and initial_odo < obs[0][1] and lo <= first < hi))
+
+
 def latest_odo(obs: list[tuple]) -> Optional[float]:
     return max((o for _, o in obs), default=None)
 
 
 def avg_daily_km(obs: list[tuple], today: date, days: int = 60) -> Optional[float]:
     """最近 days 天的日均里程；数据跨度不足 7 天时返回 None。"""
-    recent = [(t, o) for t, o in obs if _d(t) >= today - timedelta(days=days)]
-    if len(recent) < 2:
-        recent = obs[-10:]
+    recent = [(t, o) for t, o in obs if today - timedelta(days=days) <= _d(t) <= today]
     if len(recent) < 2:
         return None
     span_days = (_d(recent[-1][0]) - _d(recent[0][0])).days
@@ -198,37 +207,65 @@ def energy_totals(segs: list[Segment], d0: Optional[date] = None, d1: Optional[d
     return out
 
 
+def _combined_electricity(s, f_km, d0, d1, mono, idle_by_end):
+    """完整落在综合段内的静置电量按其自身时段分摊，剩余电量按综合段里程分摊。"""
+    total = s.elec_kwh
+    if not idle_by_end or mono is None or not s.record_ids:
+        return total * f_km
+    ids = set(s.record_ids)
+    idle_total = idle_in_period = 0.0
+    for end_id in s.record_ids[1:]:
+        idle = idle_by_end.get(end_id)
+        if idle is None or idle.start_id not in ids:
+            continue
+        idle_total += idle.idle_amount
+        idle_in_period += idle.idle_amount * _fracs(idle, d0, d1, mono)[1]
+    # 综合段可能仅凭期间充电量估算；不可将更多的静置量从它扣除。
+    if idle_total > total:
+        return total * f_km
+    return (total - idle_total) * f_km + idle_in_period
+
+
 def combined_totals(segs: list[Segment], d0=None, d1=None, kwh_per_l: float = 8.9,
-                    obs: Optional[list] = None) -> Optional[dict]:
+                    obs: Optional[list] = None, elec_segments: Optional[list[Segment]] = None) -> Optional[dict]:
     fuel = elec = dist = 0.0
     cost = 0.0
     cost_ok = True
     quality = "A"
     n = 0
     mono = _mono(obs) if obs else None
+    idle_by_end = {s.end_id: s for s in elec_segments or () if s.valid and s.kind == "idle" and s.idle_amount > 0}
     for s in segs:
         if s.status != "ok" or s.elec_kwh is None or s.excluded:
             continue
-        f = _fracs(s, d0, d1, mono)[0]
-        if f <= 0:
+        f, f_time = _fracs(s, d0, d1, mono)
+        if f_time <= 0:
+            continue
+        kwh = _combined_electricity(s, f, d0, d1, mono, idle_by_end)
+        if f <= 0 and kwh <= 0:
             continue
         fuel += s.amount * f
-        elec += s.elec_kwh * f
+        elec += kwh
         dist += s.distance * f
         quality = worse(quality, s.quality)
         if s.cost_cents is None:
             cost_ok = False
         else:
             cost += s.cost_cents * f
+            if s.elec_cost_cents is not None and s.elec_kwh > 0:
+                cost += s.elec_cost_cents * (kwh / s.elec_kwh - f)
         n += 1
-    if not n or dist < 1:
+    if not n:
         return None
     return {
-        "fuel_per100": round(fuel / dist * 100, 2),
-        "elec_per100": round(elec / dist * 100, 2),
-        "equiv_per100": round((fuel + elec / kwh_per_l) / dist * 100, 2),
+        "fuel_l": round(fuel, 2),
+        "elec_kwh": round(elec, 2),
+        "fuel_per100": round(fuel / dist * 100, 2) if dist >= 1 else None,
+        "elec_per100": round(elec / dist * 100, 2) if dist >= 1 else None,
+        "equiv_per100": round((fuel + elec / kwh_per_l) / dist * 100, 2) if dist >= 1 else None,
         "elec_share": round(elec / (elec + fuel * kwh_per_l), 3) if (elec + fuel) > 0 else None,
-        "cost_per_km": round(cost / 100 / dist, 3) if cost_ok else None,
+        "cost_cents": round(cost) if cost_ok else None,
+        "cost_per_km": round(cost / 100 / dist, 3) if cost_ok and dist >= 1 else None,
         "distance": round(dist, 1),
         "quality": quality,
         "count": n,
@@ -299,28 +336,50 @@ def rough(led: Ledger, energy: str, start_idx: int, end_idx: Optional[int] = Non
         return None
     la = a.levels(energy)[1]
     lb = b.levels(energy)[0]
-    added = sum(raw_added(pts[m].rec, energy) for m in range(start_idx + 1, end_idx))
+    stocks_known = la is not None and lb is not None and la.stock_reference == lb.stock_reference
+    added = sum_err = 0.0
+    has_quantity = False
+    # 库存平衡止于终点补能前；只按补能量粗估时则含终点这一次。
+    for p in pts[start_idx + 1:end_idx if stocks_known else end_idx + 1]:
+        if not is_energy_rec(p.rec, energy):
+            continue
+        qty = point_added(p, energy)
+        if qty is None or qty < 0:
+            return None
+        before, after = p.levels(energy)
+        if before is not None and after is not None:
+            sum_err += before.err + after.err
+        added += qty
+        has_quantity = True
     key = "fuel_l" if energy == "fuel" else "elec_kwh"
-    sum_err = 0.0
+    d0, d1 = a.ts.date(), b.ts.date()
     for s in led.summaries:
-        if a.ts.date() <= s.end and s.start <= b.ts.date():
+        if d0 <= s.end and s.start <= d1:
             d = led.summary_diffs.get(s.id, {})
-            q = d.get(key) or 0
+            if d.get(key) is None:
+                continue
+            q = _alloc(d[key], s.start, s.end, d0, d1)
             added += q
+            has_quantity = True
             if d.get(energy + "_estimated"):
                 sum_err += q * EST_QTY_ERR
-    if la is not None and lb is not None:
+    if stocks_known:
         amount = la.value - lb.value + added
         err = la.err + lb.err + sum_err
-    else:
-        amount = added + raw_added(b.rec, energy)
+    elif has_quantity:
+        amount = added
         err = None
+    else:
+        return None
     if amount < 0:
         return None
+    below_resolution = energy == "fuel" and amount == 0 and bool(err)
     return {
         "amount": round(amount, 2),
         "distance": round(distance, 1),
-        "per100": round(amount / distance * 100, 2),
+        "per100": None if below_resolution else round(amount / distance * 100, 2),
+        "below_resolution": below_resolution,
+        "stocks_known": stocks_known,
         "err100": round(err / distance * 100, 2) if err else None,
         "low100": round(max(amount - err, 0) / distance * 100, 2) if err else None,
         "high100": round((amount + err) / distance * 100, 2) if err else None,
@@ -368,7 +427,7 @@ def rough_best(led: Ledger, energy: str, *, respect_exclusions: bool = False) ->
         if idx is None or any(c[1] == idx for c in cands):
             continue
         r = rough(led, energy, idx)
-        if (r and r["distance"] >= ROUGH_MIN_KM
+        if (r and r["per100"] is not None and r["distance"] >= ROUGH_MIN_KM
                 and (not respect_exclusions or not _crosses_excluded(led, energy, r["start_id"], r["end_id"]))):
             cands.append((r, idx, scope))
     if not cands:
@@ -393,6 +452,10 @@ def _hint_code(led: Ledger, energy: str) -> str:
     if not recs:
         return "need_start"
     if energy == "fuel":
+        for idx in {ledger_start_index(led), delivery_index(led)} - {None}:
+            candidate = rough(led, energy, idx)
+            if candidate and candidate["below_resolution"]:
+                return "below_gauge_resolution"
         if not any(r.kind == "fuel" and r.fuel_full for r in recs):
             return "need_full"
         return "need_second_full"
@@ -452,9 +515,15 @@ def latest_pair(led: Ledger) -> Optional[dict]:
         return None
     idx = led.point_index()
     e = rough(led, "elec", idx[f["start_id"]], idx[f["end_id"]])
-    if e and _crosses_excluded(led, "elec", f["start_id"], f["end_id"]):
-        e = None
-    out = {
+    if not e or _crosses_excluded(led, "elec", f["start_id"], f["end_id"]):
+        return None
+    err100 = e["err100"]
+    if not e["stocks_known"] and led.calib.k:
+        err100 = COMBINED_SOC_ERR_PCT * led.calib.k / e["distance"] * 100
+    if err100 is not None and err100 > e["per100"] * MAX_REL_ERR:
+        return None
+    tot = e["amount"] + f["amount"] * kwh
+    return {
         "energy": "combined",
         "start_id": f["start_id"],
         "end_id": f["end_id"],
@@ -468,15 +537,12 @@ def latest_pair(led: Ledger) -> Optional[dict]:
         "quality": "C",
         "status": "ok",
         "scope": f["scope"],
-        "elec_kwh": e["amount"] if e else None,
-        "elec_per100": e["per100"] if e else None,
-        "elec_quality": "C" if e else None,
+        "elec_kwh": e["amount"],
+        "elec_per100": e["per100"],
+        "elec_quality": e["quality"],
+        "equiv_per100": round((f["amount"] + e["amount"] / kwh) / f["distance"] * 100, 2),
+        "elec_share": round(e["amount"] / tot, 3) if tot > 0 else None,
     }
-    if e:
-        out["equiv_per100"] = round((f["amount"] + e["amount"] / kwh) / f["distance"] * 100, 2)
-        tot = e["amount"] + f["amount"] * kwh
-        out["elec_share"] = round(e["amount"] / tot, 3) if tot > 0 else None
-    return out
 
 
 def _cost_per_km(segs: list[Segment]) -> Optional[float]:
@@ -509,6 +575,15 @@ def _alloc(total, s_start: date, s_end: date, d0: date, d1: date) -> float:
     return total * ((hi - lo).days + 1) / days
 
 
+def _alloc_cents(total, s_start: date, s_end: date, d0: date, d1: date) -> int:
+    """用汇总起点的累计分差分配整数金额，任意切分都守恒。"""
+    lo, hi = max(s_start, d0), min(s_end, d1)
+    if not total or hi < lo:
+        return 0
+    days = (s_end - s_start).days + 1
+    return total * ((hi - s_start).days + 1) // days - total * (lo - s_start).days // days
+
+
 def amortized_cents(e: Exp, d0: date, d1: date) -> float:
     """每公里成本用的费用口径：保险按保险期间（没填按一年）按天摊到 [d0, d1]，其余按发生日计入。"""
     if e.category in AMORTIZE_CATS:
@@ -523,28 +598,35 @@ def cash_and_qty(led: Ledger, expenses: list[Exp], d0: date, d1: date) -> dict:
     fuel_c = elec_c = extra_c = 0
     fuel_l = elec_kwh = 0.0
     fuel_n = elec_n = 0
+    fuel_qty_missing = elec_qty_missing = fuel_cost_missing = elec_cost_missing = 0
     home_kwh = 0.0
-    sum_fuel_c = sum_elec_c = 0.0
+    charge_type_missing = False
+    sum_fuel_c = sum_elec_c = 0
     sum_fuel_l = sum_elec_kwh = 0.0
-    for p in led.points:
-        r = p.rec
+    for r in led.records:
         if not d0 <= r.ts.date() <= d1:
             continue
         extra_c += r.extra_cents or 0
         if r.kind == "fuel":
+            fuel_cost_missing += r.cost_cents is None
+            fuel_qty_missing += r.fuel_l is None
             fuel_c += r.cost_cents or 0
             fuel_l += r.fuel_l or 0
             fuel_n += 1
         elif r.kind == "charge":
+            elec_cost_missing += r.cost_cents is None
+            elec_qty_missing += r.charge_kwh is None
             elec_c += r.cost_cents or 0
             elec_kwh += r.charge_kwh or 0
             elec_n += 1
             if r.charge_type == "home":
                 home_kwh += r.charge_kwh or 0
+            elif r.charge_type is None and (r.charge_kwh or 0) > 0:
+                charge_type_missing = True
     for s in led.summaries:
         d = led.summary_diffs.get(s.id, {})
-        sum_fuel_c += _alloc(d.get("fuel_cents"), s.start, s.end, d0, d1)
-        sum_elec_c += _alloc(d.get("elec_cents"), s.start, s.end, d0, d1)
+        sum_fuel_c += _alloc_cents(d.get("fuel_cents"), s.start, s.end, d0, d1)
+        sum_elec_c += _alloc_cents(d.get("elec_cents"), s.start, s.end, d0, d1)
         sum_fuel_l += _alloc(d.get("fuel_l"), s.start, s.end, d0, d1)
         sum_elec_kwh += _alloc(d.get("elec_kwh"), s.start, s.end, d0, d1)
     cats: dict = {}
@@ -555,8 +637,8 @@ def cash_and_qty(led: Ledger, expenses: list[Exp], d0: date, d1: date) -> dict:
             cats[e.category] = cats.get(e.category, 0) + e.amount_cents
     if extra_c:
         cats["parking"] = cats.get("parking", 0) + extra_c
-    fuel_total_c = fuel_c + round(sum_fuel_c)
-    elec_total_c = elec_c + round(sum_elec_c)
+    fuel_total_c = fuel_c + sum_fuel_c
+    elec_total_c = elec_c + sum_elec_c
     other_c = sum(cats.values())
     return {
         "fuel_cents": fuel_total_c,
@@ -565,13 +647,19 @@ def cash_and_qty(led: Ledger, expenses: list[Exp], d0: date, d1: date) -> dict:
         "other_cents": other_c,
         "total_cents": fuel_total_c + elec_total_c + other_c,
         "amortized_cents": fuel_total_c + elec_total_c + extra_c + round(amort),
-        "summary_cents": round(sum_fuel_c + sum_elec_c),
+        "summary_cents": sum_fuel_c + sum_elec_c,
         "categories": cats,
         "fuel_l": round(fuel_l + sum_fuel_l, 2),
         "elec_kwh": round(elec_kwh + sum_elec_kwh, 2),
         "fuel_count": fuel_n,
         "elec_count": elec_n,
-        "home_share": round(home_kwh / elec_kwh, 3) if home_kwh > 0 else None,
+        "fuel_qty_missing": fuel_qty_missing,
+        "elec_qty_missing": elec_qty_missing,
+        "fuel_cost_missing": fuel_cost_missing,
+        "elec_cost_missing": elec_cost_missing,
+        "energy_cost_missing": fuel_cost_missing + elec_cost_missing,
+        "home_share": (round(home_kwh / elec_kwh, 3)
+                       if elec_kwh > 0 and not (elec_qty_missing or charge_type_missing or sum_elec_kwh) else None),
     }
 
 
@@ -579,16 +667,18 @@ def period_report(led: Ledger, expenses: list[Exp], d0: date, d1: date, initial_
     obs = odo_observations(led, expenses)
     km = mileage(obs, d0, d1, initial_odo)
     cash = cash_and_qty(led, expenses, d0, d1)
+    can_cost_per_km = km >= 1 and not cash["energy_cost_missing"]
     out = {
         "from": d0.isoformat(),
         "to": d1.isoformat(),
         "mileage": km,
+        "mileage_known": mileage_known(obs, d0, d1, initial_odo),
         **cash,
-        "energy_cost_per_km": round(cash["energy_cents"] / 100 / km, 3) if km >= 1 else None,
-        "total_cost_per_km": round(cash["amortized_cents"] / 100 / km, 3) if km >= 1 else None,
+        "energy_cost_per_km": round(cash["energy_cents"] / 100 / km, 3) if can_cost_per_km else None,
+        "total_cost_per_km": round(cash["amortized_cents"] / 100 / km, 3) if can_cost_per_km else None,
         "fuel": energy_totals(led.fuel_segments, d0, d1, obs) if led.params.has_fuel else None,
         "elec": energy_totals(led.elec_segments, d0, d1, obs) if led.params.has_elec else None,
-        "combined": (combined_totals(led.combined_segments, d0, d1, led.params.kwh_per_l, obs)
+        "combined": (combined_totals(led.combined_segments, d0, d1, led.params.kwh_per_l, obs, led.elec_segments)
                      if led.combined_segments else None),
     }
     return out
@@ -610,7 +700,7 @@ def months_between(d0: date, d1: date) -> list[tuple]:
 
 
 def data_span(led: Ledger, expenses: list[Exp]) -> Optional[tuple]:
-    dates = [p.ts.date() for p in led.points] + [e.ts.date() for e in expenses]
+    dates = [r.ts.date() for r in led.records] + [e.ts.date() for e in expenses]
     dates += [s.start for s in led.summaries] + [s.end for s in led.summaries]
     if not dates:
         return None

@@ -282,7 +282,7 @@ def test_combined_from_gauge_readings_without_full():
 
 
 def test_hybrid_anomaly_uses_combined_equivalent():
-    recs = [fuel(i + 1, f"2026-04-{i * 5 + 1:02d}T08:00", 1000 + i * 500, liters, 15000)
+    recs = [fuel(i + 1, f"2026-04-{i * 5 + 1:02d}T08:00", 1000 + i * 500, liters, 15000, soc=50)
             for i, liters in enumerate([20, 20, 20, 20, 20, 45])]
     led = build_ledger(VehicleParams(**PHEV), recs)
     # 单能源不判断偏高偏低，综合段按折合油耗判断
@@ -512,3 +512,229 @@ def test_home_rough_fallback_does_not_cross_excluded_segments():
     assert rough_best(led, "fuel") is not None
     assert rough_best(led, "fuel", respect_exclusions=True) is None
     assert latest_pair(led) is None
+
+
+@pytest.mark.parametrize("energy", ["fuel", "elec"])
+def test_partial_readings_only_compare_known_sides_for_missed_hints(energy):
+    if energy == "fuel":
+        partial = fuel(2, "2026-01-02", 100, None, None, full=False, fuel_before_pct=65)
+    else:
+        partial = charge(2, "2026-01-02", 100, 65, None, None, None)
+    recs = [snap(1, "2026-01-01", 0, soc=40, fuel_pct=40), partial,
+            snap(3, "2026-01-03", 200, soc=60, fuel_pct=60),
+            snap(4, "2026-01-04", 300, soc=85, fuel_pct=85)]
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    kind = "missed_fuel" if energy == "fuel" else "missed_charge"
+    assert [(h.after_id, h.before_id) for h in led.hints if h.kind == kind] == [(1, 2), (3, 4)]
+
+
+@pytest.mark.parametrize("energy", ["fuel", "elec"])
+def test_unknown_intermediate_quantity_is_not_zero(energy):
+    mid = (fuel(2, "2026-01-02", 50, None, 1000, full=False) if energy == "fuel" else
+           charge(2, "2026-01-02", 50, None, None, None, 1000))
+    recs = [fuel(1, "2026-01-01", 0, 20, 15000, soc=80), mid,
+            fuel(3, "2026-01-03", 100, 10, 7500, soc=60)]
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    [single] = led.fuel_segments if energy == "fuel" else led.elec_segments
+    assert not single.valid and single.amount is None and single.cost_cents is None
+    [both] = led.combined_segments
+    assert not both.valid and both.cost_cents is None
+    assert (both.amount if energy == "fuel" else both.elec_kwh) is None
+
+
+@pytest.mark.parametrize("kwh, missed", [(None, False), (8, True), (0, False), (8, False)])
+def test_combined_without_endpoint_soc_distinguishes_unknown_missed_and_zero(kwh, missed):
+    recs = [fuel(1, "2026-01-01", 0, 20, 15000),
+            charge(2, "2026-01-02", 50, None, None, kwh, 0, missed_before=missed),
+            fuel(3, "2026-01-03", 100, 10, 7500)]
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    assert led.fuel_segments[0].valid
+    [both] = led.combined_segments
+    if missed or kwh is None:
+        assert not both.valid and both.elec_kwh is None and both.cost_cents is None
+        if missed:
+            assert both.status == "missed"
+    else:
+        assert both.quality == "B" and both.elec_kwh == kwh
+        # 实充量可知，不等于缺端点 SOC 时能证实行驶耗电。
+        assert both.status == "uncertain" and not both.valid and both.cost_cents is None
+
+
+def test_combined_with_measured_soc_respects_missed_charge_and_electric_summary():
+    recs = example_a()
+    recs[1].missed_before = True
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    assert led.fuel_segments[0].valid
+    assert led.combined_segments[0].status == "missed"
+    recs[1].missed_before = False
+    summary = Summary(id=1, start=date(2026, 9, 3), end=date(2026, 9, 7), elec_kwh=8)
+    led = build_ledger(VehicleParams(**PHEV), recs, summaries=[summary])
+    assert led.fuel_segments[0].valid
+    [both] = led.combined_segments
+    assert both.status == "incomplete" and both.cost_cents is None
+
+
+@pytest.mark.parametrize("missed_id, statuses", [(2, ["missed", "ok"]), (3, ["ok", "missed"])])
+def test_short_fuel_interval_never_merges_with_a_missed_interval(missed_id, statuses):
+    recs = [fuel(1, "2026-01-01", 0, 20, 15000, soc=60),
+            fuel(2, "2026-01-02", 10, 1, 750, soc=60, missed_before=missed_id == 2),
+            fuel(3, "2026-01-03", 110, 10, 7500, soc=60, missed_before=missed_id == 3)]
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    for segs in (led.fuel_segments, led.combined_segments):
+        assert [(s.start_id, s.end_id) for s in segs] == [(1, 2), (2, 3)]
+        assert [s.status for s in segs] == statuses
+
+
+def test_combined_without_soc_or_charge_evidence_has_no_electric_consumption():
+    recs = [fuel(1, "2026-01-01", 0, 20, 15000), fuel(2, "2026-01-02", 100, 10, 7500)]
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    [both] = led.combined_segments
+    assert led.fuel_segments[0].valid
+    assert not both.valid and both.elec_kwh is None and both.cost_cents is None
+
+
+def test_short_combined_interval_restarts_after_missed_charge():
+    recs = [fuel(1, "2026-01-01", 0, 20, 15000, soc=60),
+            charge(2, "2026-01-02", 5, 55, 70, 3, 300, missed_before=True),
+            fuel(3, "2026-01-03", 10, 1, 750, soc=65),
+            fuel(4, "2026-01-04", 150, 12, 9000, soc=30)]
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    assert [(s.start_id, s.end_id, s.status) for s in led.combined_segments] == [
+        (1, 3, "missed"), (3, 4, "ok")]
+
+
+def test_combined_estimates_from_soc_only_charge_without_inventing_zero_cost():
+    recs = [fuel(1, "2026-01-01", 0, 20, 15000),
+            charge(2, "2026-01-02", 50, 20, 70, None, None),
+            fuel(3, "2026-01-03", 100, 10, 7500)]
+    led = build_ledger(VehicleParams(**PHEV), recs)
+    [both] = led.combined_segments
+    assert both.valid and both.elec_kwh == pytest.approx(50 * led.calib.k, abs=0.001)
+    assert both.cost_cents is None
+
+
+@pytest.mark.parametrize("distance", [99, 100, 200])
+def test_audit_gauge_zero_requires_exact_reading(distance):
+    recs = [snap(1, "2026-01-01", 0, soc=80, fuel_pct=50),
+            snap(2, "2026-02-01", distance, soc=20, fuel_pct=50)]
+    params = VehicleParams(energy_type="phev", tank_l=50, gauge_err_pct=5, battery_kwh=18)
+    led = build_ledger(params, recs)
+    f = latest_energy(led, "fuel")
+    assert f["per100"] is None and f["hint"] == "below_gauge_resolution"
+    assert latest_pair(led) is None
+    if distance == 200:
+        assert latest_energy(led, "elec")["per100"] == 6
+    params.gauge_err_pct = 0
+    assert latest_energy(build_ledger(params, recs), "fuel")["per100"] == 0
+
+
+@pytest.mark.parametrize("limits,capacity,expected", [((80, 100), None, None), ((100, 80), None, None),
+                                                      ((80, 80), None, 40), ((80, 100), 45, 30)])
+def test_audit_full_charge_stock_reference(limits, capacity, expected):
+    recs = [charge(i, f"2026-01-0{i}", 100 * (i - 1), None, limit, 40, 1000,
+                   charge_full=True, estimated_fields=frozenset({"soc_after"}))
+            for i, limit in enumerate(limits, 1)]
+    led = build_ledger(VehicleParams(energy_type="bev", battery_kwh=capacity), recs)
+    if expected is None:
+        assert not any(s.valid for s in led.elec_segments)
+        assert latest_energy(led, "elec")["quality"] != "A"
+    else:
+        [s] = led.elec_segments
+        assert s.valid and s.quality == "A" and s.per100 == expected
+
+
+@pytest.mark.parametrize("amount,equiv", [(1, None), (8, 10.90)])
+def test_audit_combined_electric_error_bound(amount, equiv):
+    recs = [fuel(1, "2026-01-01", 0, 20, 10000),
+            charge(2, "2026-01-02", 50, None, None, amount, 100),
+            fuel(3, "2026-01-03", 100, 10, 5000)]
+    led = build_ledger(VehicleParams(energy_type="phev", tank_l=50, battery_kwh=18), recs)
+    assert latest_energy(led, "fuel")["per100"] == 10
+    assert segment_dict(led.combined_segments[0])["equiv_per100"] == equiv
+    pair = latest_pair(led)
+    assert (pair and pair["equiv_per100"]) == equiv
+    assert period_report(led, [], date(2026, 1, 1), date(2026, 1, 31))["elec_kwh"] == amount
+    # 同一组数据也走没有综合分段的首页粗估路径。
+    led.combined_segments.clear()
+    led.fuel_segments.clear()
+    recs[-1].odo = 100
+    pair = latest_pair(led)
+    assert (pair and pair["equiv_per100"]) == equiv
+
+
+@pytest.mark.parametrize("energy", ["fuel", "elec"])
+def test_audit_directional_anchors(energy):
+    if energy == "fuel":
+        a = fuel(1, "2026-01-01", 0, None, None)
+        b = fuel(2, "2026-01-03", 100, 8, 5600)
+        expected = 8
+    else:
+        a = charge(1, "2026-01-01", 0, None, 80, None, None)
+        b = charge(2, "2026-01-03", 100, 20, None, None, None)
+        expected = 12
+    led = build_ledger(VehicleParams(energy_type="phev", tank_l=50, battery_kwh=18), [a, b])
+    [s] = led.fuel_segments if energy == "fuel" else led.elec_segments
+    assert s.valid and s.quality == "A" and s.amount == expected
+    if energy == "fuel":
+        b.fuel_l = None
+    else:
+        b.soc_before = None
+    led = build_ledger(led.params, [a, b])
+    assert not any(s.valid for s in (led.fuel_segments if energy == "fuel" else led.elec_segments))
+
+
+def test_audit_short_gauge_span_is_carried_forward():
+    params = VehicleParams(energy_type="ice", tank_l=50, gauge_err_pct=0)
+    a, b, c = [snap(i, f"2026-01-0{i}", odo, fuel_pct=pct)
+               for i, odo, pct in [(1, 0, 90), (2, 10, 85), (3, 100, 50)]]
+    for records in ([a, b, c], [a, c]):
+        [s] = build_ledger(params, records).fuel_segments
+        assert (s.start_id, s.end_id, s.amount, s.per100) == (1, 3, 20, 20)
+    missed = fuel(4, "2026-01-02T12:00", 11, 1, 600, full=False, missed_before=True)
+    assert not any(s.start_id == 1 and s.end_id == 3 and s.valid
+                   for s in build_ledger(params, [a, b, missed, c]).fuel_segments)
+
+
+def test_audit_recent_daily_does_not_reuse_last_year():
+    from app.engine.aggregate import avg_daily_km
+
+    today = date(2026, 11, 25)
+    assert avg_daily_km([(dt("2025-01-01"), 0), (dt("2025-01-11"), 500)], today) is None
+    assert avg_daily_km([(dt("2026-11-01"), 0), (dt("2026-11-11"), 500)], today) == 50
+
+
+@pytest.mark.parametrize("modes,expected", [([("dc", 8)], 0), ([("home", 8)], 1),
+                                            ([("dc", None)], None), ([(None, 8)], None),
+                                            ([("dc", 8), ("home", None)], None)])
+def test_audit_home_share_needs_known_modes_and_quantities(modes, expected):
+    led = build_ledger(VehicleParams(energy_type="bev"), [
+        charge(i, f"2026-01-0{i}", i * 100, None, None, kwh, 100, ctype=kind)
+        for i, (kind, kwh) in enumerate(modes, 1)])
+    assert period_report(led, [], date(2026, 1, 1), date(2026, 1, 31))["home_share"] == expected
+
+
+def test_audit_parked_electricity_carries_consumption_cost():
+    records = [fuel(1, "2026-01-15", 0, 10, 7000, soc=100),
+               snap(2, "2026-01-31", 100, soc=80),
+               snap(3, "2026-03-01", 100, soc=50),
+               fuel(4, "2026-03-15", 200, 10, 7000, soc=30)]
+    records.insert(0, charge(5, "2026-01-14", 0, None, None, 10, 1000))
+    led = build_ledger(VehicleParams(energy_type="phev", tank_l=50, battery_kwh=18), records)
+    from app.engine.aggregate import month_bounds
+    months = [period_report(led, [], *month_bounds(2026, m))["combined"] for m in (1, 2, 3)]
+    assert [m["distance"] for m in months] == [100, 0, 100]
+    assert [m["cost_cents"] for m in months] == [3921, 579, 3900]
+    assert [m["cost_per_km"] for m in months] == [0.392, None, 0.390]
+    assert months[1]["elec_kwh"] == 5.79
+    assert sum(m["cost_cents"] for m in months) == 8400
+
+
+def test_audit_summary_cents_are_additive_across_months():
+    summary = Summary(1, date(2026, 1, 31), date(2026, 2, 1), fuel_cents=101)
+    led = build_ledger(VehicleParams(energy_type="ice"), [], summaries=[summary])
+    jan = period_report(led, [], date(2026, 1, 1), date(2026, 1, 31))
+    feb = period_report(led, [], date(2026, 2, 1), date(2026, 2, 28))
+    both = period_report(led, [], date(2026, 1, 1), date(2026, 2, 28))
+    for key in ("fuel_cents", "total_cents", "summary_cents", "amortized_cents"):
+        assert sorted([jan[key], feb[key]]) == [50, 51]
+        assert jan[key] + feb[key] == both[key] == 101

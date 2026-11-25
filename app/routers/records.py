@@ -18,13 +18,14 @@ from app.auth import get_current_user
 from app.constants import CHARGE_TYPES, SEGMENT_TAGS, SNAPSHOT_TAGS, norm_charge_type
 from app.database import PeriodSummary, Place, Record, SegmentMark, User, Vehicle, VehicleMember, get_db, utcnow
 from app.engine.aggregate import avg_daily_km, odo_observations, segment_dict
-from app.engine.ledger import equiv_per100
+from app.engine.ledger import Ledger, equiv_per100
 from app.insights import explain, latest_odo_of
 from app.services import (
     active_records,
     active_summaries,
     bump,
     iso,
+    ledger_from_session,
     load_expenses,
     load_ledger,
     log_activity,
@@ -212,9 +213,8 @@ def _find_duplicate(db: Session, v: Vehicle, r: Record) -> Optional[Record]:
     return None
 
 
-def _segment_preview(db: Session, v: Vehicle, rid: int) -> list[dict]:
+def _segment_preview(led: Ledger, rid: int) -> list[dict]:
     """保存后提示：以这条记录结尾的段，以及和上一段相比的变化。"""
-    led = load_ledger(db, v)
     out = []
     for energy, segs in (("combined", led.combined_segments), ("fuel", led.fuel_segments), ("elec", led.elec_segments)):
         valid = [s for s in segs if s.status == "ok" and s.kind == "drive"]
@@ -252,7 +252,7 @@ def create_record(body: RecordIn, user: User = Depends(get_current_user), db: Se
     if body.client_id:
         exist = db.scalar(select(Record).where(Record.client_id == body.client_id))
         if exist:
-            if exist.vehicle_id != v.id:
+            if exist.vehicle_id != v.id or exist.created_by != user.id:
                 raise HTTPException(409, "client_id 冲突")
             return {"record": record_dict(exist, users_map(db, [exist.created_by])), "warnings": [], "replayed": True}
     r = Record(vehicle_id=v.id, created_by=user.id, updated_by=user.id, client_id=body.client_id)
@@ -276,9 +276,10 @@ def create_record(body: RecordIn, user: User = Depends(get_current_user), db: Se
     db.flush()
     log_activity(db, v.id, user, "create", "record", r.id,
                  ("开始充电" if r.status == "in_progress" else "记录了" + record_summary_text(r)))
+    preview = _segment_preview(ledger_from_session(db, v), r.id) if r.status == "done" else []
+    result = {"record": record_dict(r, users_map(db, [user.id])), "warnings": warnings, "segments": preview}
     db.commit()
-    preview = _segment_preview(db, v, r.id) if r.status == "done" else []
-    return {"record": record_dict(r, users_map(db, [user.id])), "warnings": warnings, "segments": preview}
+    return result
 
 
 @router.put("/records/{rid}")
@@ -315,17 +316,19 @@ def update_record(rid: int, body: RecordIn, user: User = Depends(get_current_use
     bump(v)
     text = ("结束充电，" + record_summary_text(r)) if (was_progress and r.status == "done") else "修改了" + record_summary_text(r)
     log_activity(db, v.id, user, "update", "record", r.id, text)
-    db.commit()
-    after = load_ledger(db, v)
-    preview = _segment_preview(db, v, r.id) if r.status == "done" else []
+    db.flush()
+    after = ledger_from_session(db, v)
+    preview = _segment_preview(after, r.id) if r.status == "done" else []
 
     def segments_of(ledger):
         return {(s.energy, s.start_id, s.end_id): s
                 for group in (ledger.combined_segments, ledger.fuel_segments, ledger.elec_segments) for s in group}
     old_segments, new_segments = segments_of(before), segments_of(after)
     changed = sum(old_segments.get(key) != new_segments.get(key) for key in old_segments.keys() | new_segments.keys())
-    return {"record": record_dict(r, users_map(db, [r.created_by, user.id])), "warnings": warnings,
-            "segments": preview, "changed_segments": changed}
+    result = {"record": record_dict(r, users_map(db, [r.created_by, user.id])), "warnings": warnings,
+              "segments": preview, "changed_segments": changed}
+    db.commit()
+    return result
 
 
 @router.delete("/records/{rid}")
@@ -367,7 +370,8 @@ def restore_record(rid: int, user: User = Depends(get_current_user), db: Session
 
 @router.get("/records")
 def list_records(vehicle_id: int, kind: Optional[str] = None, q: Optional[str] = None, mine: bool = False,
-                 source: Optional[str] = None, anomaly: bool = False, before: Optional[datetime] = None,
+                 source: Optional[str] = None, anomaly: bool = False, before: Optional[str] = None,
+                 cursor: Optional[str] = None,
                  date_from: Optional[date] = None, date_to: Optional[date] = None, limit: int = 50,
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """时间线按时间倒序分页。kind 可选 fuel/charge/snapshot/expense/estimated/estimated_odometer。"""
@@ -379,6 +383,36 @@ def list_records(vehicle_id: int, kind: Optional[str] = None, q: Optional[str] =
     led = load_ledger(db, v)
     badge = _badges(led)
     items = []
+    if cursor is None and before and "|" in before:
+        cursor, before = before, None
+    cursor_key = None
+    before_ts = None
+    if before:
+        try:
+            before_ts = datetime.fromisoformat(before)
+        except ValueError as exc:
+            raise HTTPException(400, "截止时间格式无效") from exc
+    if cursor is not None:
+        try:
+            ts, rid, item_type = cursor.split("|")
+            parsed_ts = datetime.fromisoformat(ts)
+            row_id = int(rid)
+            if (item_type not in ("expense", "record") or parsed_ts.tzinfo is not None
+                    or not 0 < row_id < 2**63):
+                raise ValueError
+            cursor_key = parsed_ts, row_id, item_type
+        except ValueError as exc:
+            raise HTTPException(400, "分页游标无效") from exc
+
+    def page_query(query, model, item_type):
+        if cursor_key:
+            ts, rid, cursor_type = cursor_key
+            id_filter = model.id <= rid if item_type < cursor_type else model.id < rid
+            query = query.where(or_(model.occurred_at < ts, (model.occurred_at == ts) & id_filter))
+        elif before_ts:
+            query = query.where(model.occurred_at < before_ts)
+        return query.order_by(model.occurred_at.desc(), model.id.desc()).limit(limit + 1)
+
     if kind in (None, "", "fuel", "charge", "snapshot", "estimated", "estimated_odometer"):
         rq = select(Record).where(Record.vehicle_id == v.id, Record.deleted_at.is_(None))
         if kind in ("fuel", "charge", "snapshot"):
@@ -399,19 +433,15 @@ def list_records(vehicle_id: int, kind: Optional[str] = None, q: Optional[str] =
         if q:
             like = f"%{q.strip()}%"
             rq = rq.where(or_(Record.note.like(like), Record.place_name.like(like)))
-        if before:
-            rq = rq.where(Record.occurred_at < before)
+        if anomaly:
+            rq = rq.where(Record.id.in_([rid for rid, tags in badge.items() if any(b.get("anomaly") for b in tags)]))
         if date_from:
             rq = rq.where(Record.occurred_at >= datetime.combine(date_from, datetime.min.time()))
         if date_to:
             rq = rq.where(Record.occurred_at < datetime.combine(date_to + timedelta(days=1), datetime.min.time()))
-        rows = list(db.scalars(rq.order_by(Record.occurred_at.desc(), Record.id.desc()).limit(limit)))
-        for r in rows:
-            d = {"type": "record", **record_dict(r)}
-            d["badges"] = badge.get(r.id, [])
-            if anomaly and not any(b.get("anomaly") for b in d["badges"]):
-                continue
-            items.append(d)
+        for r in db.scalars(page_query(rq, Record, "record")):
+            d = {"type": "record", **record_dict(r), "badges": badge.get(r.id, [])}
+            items.append(((r.occurred_at, r.id, "record"), d))
     if kind in (None, "", "expense") and not anomaly and not source:
         eq = select(Expense).where(Expense.vehicle_id == v.id, Expense.deleted_at.is_(None))
         if mine:
@@ -419,19 +449,20 @@ def list_records(vehicle_id: int, kind: Optional[str] = None, q: Optional[str] =
         if q:
             like = f"%{q.strip()}%"
             eq = eq.where(or_(Expense.note.like(like), Expense.vendor.like(like), Expense.title.like(like)))
-        if before:
-            eq = eq.where(Expense.occurred_at < before)
         if date_from:
             eq = eq.where(Expense.occurred_at >= datetime.combine(date_from, datetime.min.time()))
         if date_to:
             eq = eq.where(Expense.occurred_at < datetime.combine(date_to + timedelta(days=1), datetime.min.time()))
-        for e in db.scalars(eq.order_by(Expense.occurred_at.desc(), Expense.id.desc()).limit(limit)):
-            items.append({"type": "expense", **expense_dict(e)})
-    items.sort(key=lambda x: (x["occurred_at"], x["id"]), reverse=True)
-    items = items[:limit]
-    _attach_users(db, items)
-    next_cursor = items[-1]["occurred_at"] if len(items) == limit else None
-    return {"items": items, "next": next_cursor}
+        for e in db.scalars(page_query(eq, Expense, "expense")):
+            items.append(((e.occurred_at, e.id, "expense"), {"type": "expense", **expense_dict(e)}))
+    items.sort(key=lambda pair: pair[0], reverse=True)
+    next_cursor = None
+    if len(items) > limit:
+        ts, rid, item_type = items[limit - 1][0]
+        next_cursor = f"{ts.isoformat()}|{rid}|{item_type}"
+    page = [item for _, item in items[:limit]]
+    _attach_users(db, page)
+    return {"items": page, "next": next_cursor}
 
 
 def _attach_users(db: Session, items: list) -> None:
@@ -569,7 +600,7 @@ def _sorted_places(db: Session, v: Vehicle, user: User, kind: str) -> list[dict]
 @router.get("/records/{rid}")
 def get_record(rid: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Record, rid)
-    if not r:
+    if not r or r.deleted_at:
         raise HTTPException(404, "记录不存在")
     v, role = require_vehicle(db, user, r.vehicle_id)
     led = load_ledger(db, v)

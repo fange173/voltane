@@ -26,7 +26,9 @@ jobs:
       - name: pytest
         run: pytest -q
       - name: Frontend module smoke
-        run: node scripts/smoke-modules.mjs
+        run: |
+          node scripts/smoke-modules.mjs
+          node --test scripts/test-audit-views.mjs scripts/test-outbox.mjs
 
   docker:
     needs: [test]

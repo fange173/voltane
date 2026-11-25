@@ -98,6 +98,7 @@ class Level:
     value: float
     err: float
     conf: str  # exact | measured | estimated
+    stock_reference: Optional[tuple] = None  # 无 k 时以各次充电的历史上限为相对基准
 
     @property
     def precise(self) -> bool:
@@ -127,6 +128,7 @@ class Segment:
     elec_kwh: Optional[float] = None
     elec_err: Optional[float] = None
     elec_quality: Optional[str] = None
+    elec_cost_cents: Optional[int] = None
     # 标成静置但有行驶里程的段：行驶部分按平时能耗估算，其余算静置
     drive_part: Optional[float] = None
     drive_base100: Optional[float] = None

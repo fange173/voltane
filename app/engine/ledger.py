@@ -72,6 +72,7 @@ class Ledger:
     params: VehicleParams
     calib: Calibration
     points: list
+    records: list[Rec]  # 有效原始记录；现金和笔数不要求有里程时点
     fuel_segments: list = field(default_factory=list)
     elec_segments: list = field(default_factory=list)
     combined_segments: list = field(default_factory=list)
@@ -177,11 +178,14 @@ def elec_levels(r: Rec, p: VehicleParams, k: Optional[float]) -> tuple:
     if r.charge_full and r.soc_after is not None and "soc_after" in est and k:
         after = Level(r.soc_after * k, k, "exact")
     if after is None and r.charge_full:
-        after = Level(full_ref, 1 * k if k else 0.0, "exact")
+        if k:
+            after = Level(full_ref, k, "exact")
+        else:
+            after = Level(0.0, 0.0, "exact", stock_reference=(r.soc_after,))
     if after is None and before is not None and kwh is not None:
         after = Level(before.value + kwh, before.err, kwh_conf or before.conf)
     if before is None and after is not None and kwh is not None:
-        before = Level(after.value - kwh, after.err, kwh_conf or after.conf)
+        before = Level(after.value - kwh, after.err, kwh_conf or after.conf, after.stock_reference)
     return before, after
 
 
@@ -193,6 +197,20 @@ def raw_added(r: Rec, energy: str) -> float:
 
 def is_energy_rec(r: Rec, energy: str) -> bool:
     return r.kind == ("fuel" if energy == "fuel" else "charge")
+
+
+def point_added(pt: Point, energy: str) -> Optional[float]:
+    """同类补能优先按存量差，其次取记录量；缺少两种依据时返回未知。"""
+    if not is_energy_rec(pt.rec, energy):
+        return 0.0
+    before, after = pt.levels(energy)
+    if before is not None and after is not None:
+        return after.value - before.value
+    return pt.rec.fuel_l if energy == "fuel" else pt.rec.charge_kwh
+
+
+def _has_missed(points, i, j, energy):
+    return any(points[x].rec.missed_before and is_energy_rec(points[x].rec, energy) for x in range(i + 1, j + 1))
 
 
 def qty_estimated(r: Rec, energy: str) -> bool:
@@ -216,28 +234,28 @@ def span(points: list[Point], i: int, j: int, energy: str) -> Span:
     a, b = points[i], points[j]
     la = a.levels(energy)[1]
     lb = b.levels(energy)[0]
+    if _has_missed(points, i, j, energy):
+        return Span(None, 0.0, "D", "missed")
     if la is None or lb is None:
+        return Span(None, 0.0, "D", "unknown")
+    if la.stock_reference != lb.stock_reference:
         return Span(None, 0.0, "D", "unknown")
     amount = la.value - lb.value
     err = la.err + lb.err
     quality = "A" if la.precise and lb.precise else "B"
     for m in range(i + 1, j):
         p = points[m]
+        q = point_added(p, energy)
+        if q is None:
+            return Span(None, 0.0, "D", "unknown")
+        amount += q
         before, after = p.levels(energy)
         if before is not None and after is not None:
-            amount += after.value - before.value
             if not (before.precise and after.precise):
                 quality = "B"
-        else:
-            q = raw_added(p.rec, energy)
-            amount += q
-            if qty_estimated(p.rec, energy):
-                err += q * EST_QTY_ERR
-                quality = "B"
-    for m in range(i + 1, j + 1):
-        r = points[m].rec
-        if r.missed_before and is_energy_rec(r, energy):
-            return Span(round(amount, 3), round(err, 3), quality, "missed")
+        elif qty_estimated(p.rec, energy):
+            err += q * EST_QTY_ERR
+            quality = "B"
     status = "ok"
     if amount < 0:
         status = "negative"
@@ -266,13 +284,35 @@ def _make_segment(points, i, j, energy, sp: Span) -> Segment:
     return seg
 
 
-def _usable_anchor(p: Point, energy: str) -> bool:
-    before, after = p.levels(energy)
-    return before is not None and after is not None and not p.odo_estimated
+def _anchor_intervals(points, energy, eligible=lambda p: True):
+    start = None
+    for j, p in enumerate(points):
+        if p.odo_estimated or not eligible(p):
+            continue
+        before, after = p.levels(energy)
+        if before is None and after is None:
+            continue
+        if start is not None and before is not None:
+            yield start, j
+        start = j if after is not None else None
 
 
 def _strict_fuel_anchor(p: Point) -> bool:
-    return _usable_anchor(p, "fuel") and p.rec.kind == "fuel" and p.rec.fuel_full
+    return p.rec.kind == "fuel" and p.rec.fuel_full
+
+
+def _merge_short_anchors(points, pairs, threshold, has_break):
+    i = 0
+    while i < len(pairs):
+        a, b = pairs[i]
+        while i + 1 < len(pairs) and points[b].odo - points[a].odo < threshold:
+            c, d = pairs[i + 1]
+            if b != c or has_break(a, d):
+                break
+            b = d
+            i += 1
+        yield a, b
+        i += 1
 
 
 # ---------- 汇总补差 ----------
@@ -362,10 +402,12 @@ def _electricity_cost(points, i, j) -> Optional[int]:
             continue
         if r.cost_cents is not None:
             cents += r.cost_cents
-        elif raw_added(r, "elec") > 0:
-            if price is None:
+        else:
+            qty = r.charge_kwh if r.charge_kwh is not None else point_added(p, "elec")
+            if qty is None or (qty != 0 and price is None):
                 return None
-            cents += raw_added(r, "elec") * price * 100
+            if qty != 0:
+                cents += qty * price * 100
     after_start, before_end = points[i].elec[1], points[j].elec[0]
     if after_start is not None and before_end is not None:
         delta = after_start.value - before_end.value
@@ -394,34 +436,27 @@ def _segment_cost(points, i, j, energy, amount) -> Optional[int]:
 
 
 def _fuel_segments(points, p: VehicleParams) -> list[Segment]:
-    strict = [i for i, pt in enumerate(points) if _strict_fuel_anchor(pt)]
+    strict = list(_anchor_intervals(points, "fuel", _strict_fuel_anchor))
     segs = []
     covered = []
-    k = 0
-    while k < len(strict) - 1:
-        i = strict[k]
-        # 加满点间距不足最小段里程时跳到下一个加满点（短段合并）
-        m = k + 1
-        while m < len(strict) - 1 and points[strict[m]].odo - points[i].odo < p.min_segment_km:
-            m += 1
-        j = strict[m]
+
+    def has_break(a, b):
+        return _has_missed(points, a, b, "fuel") or (p.has_elec and _has_missed(points, a, b, "elec"))
+
+    for i, j in _merge_short_anchors(points, strict, p.min_segment_km, has_break):
         sp = span(points, i, j, "fuel")
         seg = _make_segment(points, i, j, "fuel", sp)
         seg.anchor = "full"
-        if points[j].odo - points[i].odo < p.min_segment_km:
+        if seg.distance < p.min_segment_km:
             seg.kind = "short"
         segs.append(seg)
         if sp.status == "ok":
             covered.append((i, j))
-        k = m
     if p.allow_gauge_anchor:
-        strict_set = set(strict)
-        loose = [i for i, pt in enumerate(points) if _usable_anchor(pt, "fuel")]
-        for a, b in zip(loose, loose[1:]):
-            if a in strict_set and b in strict_set:
-                continue
-            if any(ci <= a and b <= cj for ci, cj in covered):
-                continue
+        loose = [(a, b) for a, b in _anchor_intervals(points, "fuel")
+                 if not (_strict_fuel_anchor(points[a]) and _strict_fuel_anchor(points[b]))
+                 and not any(ci <= a and b <= cj for ci, cj in covered)]
+        for a, b in _merge_short_anchors(points, loose, p.min_segment_km, has_break):
             if points[b].odo - points[a].odo < p.min_segment_km:
                 continue
             seg = _make_segment(points, a, b, "fuel", span(points, a, b, "fuel"))
@@ -432,9 +467,8 @@ def _fuel_segments(points, p: VehicleParams) -> list[Segment]:
 
 
 def _elec_segments(points, p: VehicleParams) -> list[Segment]:
-    anchors = [i for i, pt in enumerate(points) if _usable_anchor(pt, "elec")]
     raw = []
-    for a, b in zip(anchors, anchors[1:]):
+    for a, b in _anchor_intervals(points, "elec"):
         sp = span(points, a, b, "elec")
         seg = _make_segment(points, a, b, "elec", sp)
         if points[b].odo - points[a].odo < IDLE_KM:
@@ -473,22 +507,30 @@ def _combined_segments(points, fuel_segs: list[Segment], k: Optional[float]) -> 
         seg.kind = fs.kind
         seg.anchor = fs.anchor
         esp = span(points, i, j, "elec")
-        if esp.status == "unknown":
-            # 两端没有电量读数：只用期间充电量，误差按 SOC 差 ±20 个百分点计
-            kwh = sum(raw_added(points[x].rec, "elec") for x in range(i + 1, j))
-            err = COMBINED_SOC_ERR_PCT * k if k else None
-            missed = any(points[x].rec.missed_before and points[x].rec.kind == "charge" for x in range(i + 1, j + 1))
-            seg.elec_kwh = None if missed else round(kwh, 3)
-            seg.elec_err = err
-            seg.elec_quality = "B"
+        if esp.status == "unknown" and (points[i].elec[1] is None or points[j].elec[0] is None):
+            # 端点 SOC 不全时只用期间充电量估算，不能把没有记录或缺数量当成零。
+            charges = [point_added(pt, "elec") for pt in points[i + 1:j] if is_energy_rec(pt.rec, "elec")]
+            if charges and None not in charges:
+                seg.elec_kwh = round(sum(charges), 3)
+                seg.elec_err = COMBINED_SOC_ERR_PCT * k if k else None
+                seg.elec_quality = "B"
         elif esp.status in ("ok", "uncertain"):
             seg.elec_kwh, seg.elec_err, seg.elec_quality = esp.amount, esp.err, esp.quality
-        fuel_cost = _segment_cost(points, i, j, "fuel", fsp.amount) if fsp.status == "ok" else None
-        elec_cost = _segment_cost(points, i, j, "elec", seg.elec_kwh)
-        if fuel_cost is not None and elec_cost is not None:
-            seg.cost_cents = fuel_cost + elec_cost
-        if seg.elec_quality:
-            seg.quality = worse(seg.quality, seg.elec_quality)
+        if seg.status == "ok" and (esp.status == "uncertain" or (
+                seg.elec_quality == "B" and seg.elec_err is not None
+                and seg.elec_err > seg.elec_kwh * MAX_REL_ERR)):
+            seg.status = "uncertain"
+        if seg.elec_quality is None:
+            seg.elec_quality = "D"
+            if seg.status == "ok" or esp.status == "missed":
+                seg.status = esp.status
+        seg.quality = worse(seg.quality, seg.elec_quality)
+        if seg.status == "ok":
+            fuel_cost = _segment_cost(points, i, j, "fuel", fsp.amount)
+            elec_cost = _segment_cost(points, i, j, "elec", seg.elec_kwh)
+            if fuel_cost is not None and elec_cost is not None:
+                seg.elec_cost_cents = elec_cost
+                seg.cost_cents = fuel_cost + elec_cost
         segs.append(seg)
     return segs
 
@@ -569,41 +611,26 @@ def _detect_idle_anomalies(segs: list[Segment]) -> None:
 
 def _detect_missed(points, p: VehicleParams, k: Optional[float]) -> list[Hint]:
     hints = []
+    checks = []
     if p.has_elec and k:
-        prev = None
-        for idx, pt in enumerate(points):
-            before, after = pt.elec
-            if before is None or pt.odo_estimated:
-                if pt.rec.kind == "charge":
-                    prev = None
-                continue
-            if prev is not None:
-                pi, pafter = prev
-                between_charge = any(points[x].rec.kind == "charge" for x in range(pi + 1, idx))
-                if not between_charge and before.value - pafter.value > 3 * k:
-                    hints.append(Hint(
-                        f"missed_charge:{points[pi].id}:{pt.id}", "missed_charge", points[pi].id, pt.id,
-                        round(pafter.value / k, 1), round(before.value / k, 1),
-                    ))
-            prev = (idx, after)
+        checks.append(("elec", "missed_charge", k, 3))
     if p.has_fuel and p.tank_l:
-        thresh = max(0.10 * p.tank_l, 2 * p.gauge_err_pct / 100 * p.tank_l)
+        checks.append(("fuel", "missed_fuel", p.tank_l / 100, max(10, 2 * p.gauge_err_pct)))
+    for energy, kind, per_pct, threshold_pct in checks:
         prev = None
-        for idx, pt in enumerate(points):
-            before, after = pt.fuel
-            if before is None or pt.odo_estimated:
-                if pt.rec.kind == "fuel":
-                    prev = None
-                continue
-            if prev is not None:
-                pi, pafter = prev
-                between = any(points[x].rec.kind == "fuel" for x in range(pi + 1, idx))
-                if not between and before.value - pafter.value > thresh:
+        for pt in points:
+            before, after = pt.levels(energy)
+            if not pt.odo_estimated and before is not None and prev is not None:
+                prev_id, value = prev
+                if before.value - value > threshold_pct * per_pct:
                     hints.append(Hint(
-                        f"missed_fuel:{points[pi].id}:{pt.id}", "missed_fuel", points[pi].id, pt.id,
-                        round(pafter.value / p.tank_l * 100, 1), round(before.value / p.tank_l * 100, 1),
+                        f"{kind}:{prev_id}:{pt.id}", kind, prev_id, pt.id,
+                        round(value / per_pct, 1), round(before.value / per_pct, 1),
                     ))
-            prev = (idx, after)
+            if not pt.odo_estimated and after is not None:
+                prev = (pt.id, after.value)
+            elif is_energy_rec(pt.rec, energy):
+                prev = None
     return hints
 
 
@@ -627,7 +654,7 @@ def build_ledger(
     fuel_price = _avg_price([r for r in records if r.kind == "fuel"], "fuel") or 7.5
     elec_price = _avg_price([r for r in records if r.kind == "charge"], "elec") or 0.6
     diffs = summary_diffs(summaries, records, fuel_price, elec_price)
-    led = Ledger(params, calib, points, summaries=summaries, summary_diffs=diffs)
+    led = Ledger(params, calib, points, records=records, summaries=summaries, summary_diffs=diffs)
 
     if params.has_fuel:
         led.fuel_segments = _fuel_segments(points, params)
@@ -638,9 +665,10 @@ def build_ledger(
 
     for energy, segs in (("fuel", led.fuel_segments), ("elec", led.elec_segments), ("combined", led.combined_segments)):
         for s in segs:
-            check = "fuel" if energy == "combined" else energy
-            if s.status == "ok" and _summary_overlaps(s, summaries, diffs, check):
+            checks = ("fuel", "elec") if energy == "combined" else (energy,)
+            if s.status == "ok" and any(_summary_overlaps(s, summaries, diffs, key) for key in checks):
                 s.status = "incomplete"
+                s.cost_cents = None
             if energy != "combined" and s.cost_cents is None:
                 s.cost_cents = _segment_cost(points, s._i, s._j, energy, s.amount) if s.status == "ok" else None
         _apply_marks(segs, marks, energy)

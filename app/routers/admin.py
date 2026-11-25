@@ -4,6 +4,7 @@ admin.py — 用户管理、备份与恢复、系统设置、导入导出
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import os
@@ -18,13 +19,14 @@ from typing import Literal, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.access import require_vehicle
 from app.auth import require_admin, get_current_user, user_brief
-from app.constants import EXPENSE_CATEGORIES, RECORD_KINDS, norm_charge_type
+from app.constants import EXPENSE_CATEGORIES, norm_charge_type
 from app.database import (
+    AppSetting,
     DATABASE_URL,
     Expense,
     PeriodSummary,
@@ -308,7 +310,7 @@ def export(vehicle_id: int, format: Literal["json", "csv", "expenses_csv"] = "js
         w.writerow(["时间", "分类", "名称", "金额", "里程", "商家", "开始日期", "结束日期", "备注"])
         for e in exps:
             w.writerow([e.occurred_at.strftime("%Y-%m-%d %H:%M"), EXPENSE_CATEGORIES.get(e.category, e.category),
-                        e.title, _cents(e.amount_cents), e.odometer_km or "", e.vendor, iso(e.period_start) or "",
+                        e.title, _cents(e.amount_cents), e.odometer_km, e.vendor, iso(e.period_start) or "",
                         iso(e.period_end) or "", e.note])
         name = f"voltane-{v.id}-expenses-{stamp}.csv"
     return Response(buf.getvalue(), media_type="text/csv; charset=utf-8",
@@ -324,72 +326,96 @@ def _jsonable(x):
 # ---------- 导入（本应用导出的 JSON） ----------
 
 
-def _dt(s):
-    return datetime.fromisoformat(s) if s else None
-
-
-def _d(s):
-    return date.fromisoformat(s[:10]) if s else None
+def _import_stamp(row) -> str:
+    values = []
+    for column in row.__table__.columns:
+        value = getattr(row, column.name)
+        if value is not None and column.type.python_type is float:
+            value = float(value)
+        values.append(_jsonable(value))
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
 
 
 @router.post("/import")
 async def import_json(vehicle_id: int, file: UploadFile = File(...), user: User = Depends(get_current_user),
                       db: Session = Depends(get_db)):
-    """把导出的 JSON 导入到一辆已有的车（需要车主权限），整批共用一个批次号，可以整批撤销。"""
+    """按普通表单的校验规则整批导入。批次清单记录新行的身份与初始状态。"""
+    from app.routers.expenses import ExpenseIn, ReminderBody, _apply_expense, _apply_reminder
+    from app.routers.records import RecordIn, SummaryIn, _apply_summary, _check_kind, _fill
+
     v, _ = require_vehicle(db, user, vehicle_id, "owner")
     try:
         data = json.loads((await file.read()).decode("utf-8-sig"))
     except (ValueError, UnicodeDecodeError) as exc:
         raise HTTPException(400, "文件不是有效的 JSON") from exc
-    if data.get("app") != "voltane":
-        raise HTTPException(400, "只支持导入本应用导出的 JSON")
-    batch = secrets.token_hex(6)
-    cols = {c.name for c in Record.__table__.columns}
+    if not isinstance(data, dict) or data.get("app") != "voltane" or data.get("version", 1) != 1:
+        raise HTTPException(400, "不支持的油电簿导出格式")
+    batch = secrets.token_hex(12)
+    groups = {key: [] for key in ("records", "expenses", "summaries", "reminders")}
     seal_legacy_segment_marks(db, v)
-    n_rec = n_exp = 0
-    for r in data.get("records", []):
-        if r.get("status") == "in_progress" or r.get("kind") not in RECORD_KINDS or not r.get("occurred_at"):
-            continue
-        row = Record(vehicle_id=v.id, created_by=user.id, updated_by=user.id,
-                     source="import", import_batch_id=batch)
-        for k, val in r.items():
-            if k in cols and k not in ("id", "vehicle_id", "created_by", "updated_by", "client_id",
-                                        "version", "deleted_at", "created_at", "updated_at", "place_id", "source",
-                                        "occurred_at", "estimated_fields"):
-                setattr(row, k, val)
-        row.occurred_at = _dt(r["occurred_at"])
-        row.charge_type = norm_charge_type(row.charge_type)
-        # 旧版导出带「实付」：实付才是真实花费，与数据库迁移 v2 的口径一致
-        if r.get("paid_cents") is not None:
-            row.amount_cents = r["paid_cents"]
-        row.status = "done"
-        row.estimated_fields = json.dumps([x for x in (r.get("estimated_fields") or []) if isinstance(x, str)][:20])
-        db.add(row)
-        n_rec += 1
-    for e in data.get("expenses", []):
-        if e.get("category") not in EXPENSE_CATEGORIES or not e.get("occurred_at"):
-            continue
-        db.add(Expense(vehicle_id=v.id, category=e["category"], title=e.get("title") or "",
-                       sub_items=json.dumps(e.get("sub_items") or [], ensure_ascii=False),
-                       occurred_at=_dt(e["occurred_at"]), odometer_km=e.get("odometer_km"),
-                       amount_cents=int(e.get("amount_cents") or 0), vendor=e.get("vendor") or "",
-                       period_start=_d(e.get("period_start")), period_end=_d(e.get("period_end")),
-                       note=e.get("note") or "", created_by=user.id, updated_by=user.id,
-                       import_batch_id=batch))
-        n_exp += 1
+    for key, rows in groups.items():
+        entries = data.get(key, [])
+        if not isinstance(entries, list):
+            raise HTTPException(400, f"{key} 必须是列表，本批未导入")
+        for i, entry in enumerate(entries, 1):
+            try:
+                if not isinstance(entry, dict):
+                    raise ValueError("需要对象")
+                fields = {**entry, "vehicle_id": v.id, "client_id": None, "version": None}
+                if key == "records":
+                    if fields.get("paid_cents") is not None:
+                        fields["amount_cents"] = fields["paid_cents"]
+                    fields["charge_type"] = norm_charge_type(fields.get("charge_type"))
+                    body = RecordIn(**{**fields, "source": "import"})
+                    _check_kind(v, body.kind)
+                    row = Record(vehicle_id=v.id, created_by=user.id, updated_by=user.id, import_batch_id=batch)
+                    _fill(row, body, v)
+                    row.place_name = body.place_name
+                elif key == "expenses":
+                    row = Expense(vehicle_id=v.id, created_by=user.id, updated_by=user.id, import_batch_id=batch)
+                    _apply_expense(row, ExpenseIn(**fields))
+                elif key == "summaries":
+                    row = PeriodSummary(vehicle_id=v.id, created_by=user.id, updated_by=user.id)
+                    _apply_summary(row, SummaryIn(**fields))
+                else:
+                    row = Reminder(vehicle_id=v.id, created_by=user.id)
+                    _apply_reminder(row, ReminderBody(**fields))
+            except (ValueError, TypeError, HTTPException) as exc:
+                raise HTTPException(400, f"{key} 第 {i} 项无效，本批未导入") from exc
+            db.add(row)
+            rows.append(row)
+    if not any(groups.values()):
+        raise HTTPException(400, "文件中没有可导入的数据")
+    db.flush()
+    manifest = {key: [[row.id, _import_stamp(row)] for row in rows] for key, rows in groups.items()}
+    set_setting(db, f"import:{v.id}:{batch}", json.dumps(manifest))
     bump(v)
-    log_activity(db, v.id, user, "create", "import", None, f"导入了 {n_rec} 条记录、{n_exp} 笔费用")
+    log_activity(db, v.id, user, "create", "import", None, f"导入 {sum(map(len, groups.values()))} 项")
     db.commit()
-    return {"batch": batch, "records": n_rec, "expenses": n_exp}
+    return {"batch": batch, **{key: len(rows) for key, rows in groups.items()}}
 
 
 @router.delete("/import/{batch}")
 def undo_import(batch: str, vehicle_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     v, _ = require_vehicle(db, user, vehicle_id, "owner")
+    receipt = db.get(AppSetting, f"import:{v.id}:{batch}")
+    if not receipt:
+        raise HTTPException(409, "没有可核对的批次清单，未删除任何数据")
+    manifest = json.loads(receipt.value)
+    counts = {}
     seal_legacy_segment_marks(db, v)
-    a = db.execute(delete(Record).where(Record.vehicle_id == v.id, Record.import_batch_id == batch)).rowcount
-    b = db.execute(delete(Expense).where(Expense.vehicle_id == v.id, Expense.import_batch_id == batch)).rowcount
+    protected = 0
+    for key, model in (("records", Record), ("expenses", Expense), ("summaries", PeriodSummary), ("reminders", Reminder)):
+        counts[key] = 0
+        for rid, stamp in manifest[key]:
+            row = db.get(model, rid)
+            if not row or row.vehicle_id != v.id or _import_stamp(row) != stamp:
+                protected += 1
+                continue
+            db.delete(row)
+            counts[key] += 1
+    db.delete(receipt)
     bump(v)
-    log_activity(db, v.id, user, "delete", "import", None, f"撤销了一次导入（{a} 条记录、{b} 笔费用）")
+    log_activity(db, v.id, user, "delete", "import", None, f"撤销导入 {sum(counts.values())} 项，跳过 {protected} 项")
     db.commit()
-    return {"records": a, "expenses": b}
+    return {**counts, "skipped": protected}

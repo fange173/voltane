@@ -130,18 +130,23 @@ def load_ledger(db: Session, v: Vehicle) -> Ledger:
         if key in _cache:
             _cache.move_to_end(key)
             return _cache[key]
+    led = ledger_from_session(db, v)
+    with _cache_lock:
+        _cache[key] = led
+        while len(_cache) > _CACHE_MAX:
+            _cache.popitem(last=False)
+    return led
+
+
+def ledger_from_session(db: Session, v: Vehicle) -> Ledger:
+    """从当前事务重建账本；保存预览不应将未提交的数据放入共享缓存。"""
     rows = [r for r in active_records(db, v.id) if r.status == "done"]
     sums = [summary_from_row(s) for s in active_summaries(db, v.id)]
     marks = {
         (m.end_record_id, m.energy): Mark(m.tag, m.excluded, _segment_mark_start(m.note))
         for m in db.scalars(select(SegmentMark).where(SegmentMark.vehicle_id == v.id))
     }
-    led = build_ledger(params_for(v), [rec_from_row(r) for r in rows], sums, marks)
-    with _cache_lock:
-        _cache[key] = led
-        while len(_cache) > _CACHE_MAX:
-            _cache.popitem(last=False)
-    return led
+    return build_ledger(params_for(v), [rec_from_row(r) for r in rows], sums, marks)
 
 
 def bump(v: Vehicle) -> None:

@@ -55,13 +55,22 @@ async function inviteBox(code, onDone) {
     $("#invite-box").innerHTML = String(html`<div class="callout warn">${e.message}</div>`);
     return;
   }
-  $("#invite-box").innerHTML = String(html`<div class="callout">${raw(icon("car", 18))}<span><b>${p.inviter}</b> 邀请你以「${p.role_label}」加入「${p.vehicle_name}」。${p.allow_signup ? "没有账号可以直接注册：" : "请先登录，登录后自动加入。"}</span></div>
+  const box = $("#invite-box");
+  box.innerHTML = String(html`<div class="callout" data-invitation></div>
     ${p.allow_signup ? html`<form class="card stack" id="signup-form" novalidate style="margin-bottom:12px">
       <div class="field"><label>用户名</label><input class="input" name="username" autocomplete="username" placeholder="字母、数字、下划线"></div>
       <div class="field"><label>昵称</label><input class="input" name="display_name" placeholder="家人怎么称呼你"></div>
       <div class="field"><label>密码（至少 6 位）</label><input class="input" type="password" name="password" autocomplete="new-password"></div>
       <div class="form-error"></div><button class="btn btn-primary btn-block" type="submit">注册并加入</button>
       <p class="tiny muted" style="text-align:center">已有账号？在下面登录</p></form>` : ""}`);
+  const inviteHelp = p.allow_signup ? "已有账号请先登录，再点「加入」；没有账号可以直接注册。" : "请先登录，再点「加入」。";
+  const invitation = $("[data-invitation]", box);
+  invitation.innerHTML = icon("car", 18);
+  const message = document.createElement("span");
+  const inviter = document.createElement("b");
+  inviter.textContent = p.inviter;
+  message.append(inviter, ` 邀请你以「${p.role_label}」加入「${p.vehicle_name}」。${inviteHelp}`);
+  invitation.append(message);
   const f = $("#signup-form");
   if (!f) return;
   f.addEventListener("submit", async (e) => {
